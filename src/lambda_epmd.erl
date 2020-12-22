@@ -87,6 +87,8 @@ start_link() ->
 -spec set_node(node() | pid(), address()) -> ok.
 set_node(Pid, Address) when is_pid(Pid) ->
     set_node(node(Pid), Address);
+set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
+    set_node(Node, Address);
 set_node(Node, {ip, _Ip, _Port} = Address) ->
     gen_server:call(?MODULE, {set, Node, Address});
 set_node(Node, {epmd, Hostname} = Address) when is_list(Hostname) ->
@@ -98,7 +100,7 @@ del_node(Node) ->
     gen_server:call(?MODULE, {del, Node}).
 
 %% @doc Returns mapping of the node name to an address.
--spec get_node(node()) -> {ok, address()} | error.
+-spec get_node(node()) -> address() | error.
 get_node(Node) ->
     gen_server:call(?MODULE, {get, Node}).
 
@@ -117,7 +119,7 @@ get_node(Node) ->
 
 port_please(Name, Host, _Timeout) ->
     case get_node(make_node(Name, Host)) of
-        {ok, {_Family, _Addr, Port}} ->
+        {_Family, _Addr, Port} ->
             {port, Port, ?EPMD_VERSION}; %% hardcode EPMD version to 6
         error ->
             noport
@@ -172,7 +174,9 @@ listen_port_please(_Name, _Host) ->
 
 address_please(Name, Host, AddressFamily) ->
     case get_node(make_node(Name, Host)) of
-        {ok, {AddressFamily, Addr, Port}} ->
+        {ip, Addr, Port} when AddressFamily =:= inet, tuple_size(Addr) =:= 4 ->
+            {ok, Addr, Port, ?EPMD_VERSION};
+        {ip, Addr, Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
             {ok, Addr, Port, ?EPMD_VERSION};
         error ->
             {error, not_found}
@@ -197,19 +201,19 @@ handle_call({del, Node}, _From, State) ->
     {reply, ok, maps:remove(Node, State)};
 
 handle_call({get, Node}, _From, State) ->
-    {reply, maps:find(Node, State), State};
+    {reply, case maps:find(Node, State) of {ok, Ret} -> Ret; error -> error end, State};
 
 handle_call({names, HostName}, _From, State) ->
     %% find all Nodes of a HostName - need to iterate the entire node
     %%  map. This is a very rare request, so can be slow
-    Nodes = [Node || N <- maps:keys(State), [Node, HostName] = string:lexemes(N, "@")],
+    Nodes = lists:filter(fun (Full) -> tl(string:lexemes(Full, "@")) =:= HostName end, maps:keys(State)),
     {reply, Nodes, State};
 
 handle_call({register, Name, PortNo, Family}, _From, State) ->
     %% get the local hostname
     {ok, Host} = inet:gethostname(),
-    Domain = inet_db:res_option(domain),
-    Node = make_node(Name, Host ++ [$. | Domain]),
+    Domain = case inet_db:res_option(domain) of [] -> []; D -> [$. | D] end,
+    Node = make_node(Name, Host ++ Domain),
     Addr =
         case application:get_env(kernel, inet_dist_use_interface) of
             {ok, Addr1} when Family =:= inet, tuple_size(Addr1) =:= 4 ->
@@ -225,7 +229,7 @@ handle_call({register, Name, PortNo, Family}, _From, State) ->
                 {ok, #hostent{h_addr_list = Addrs}} = inet_res:gethostbyname(Host, Family),
                 hd(Addrs)
         end,
-    {reply, {ok, 1}, State#{Node => {Family, Addr, PortNo}}}.
+    {reply, {ok, 1}, State#{Node => {ip, Addr, PortNo}}}.
 
 handle_cast(_Cast, _State) ->
     error(badarg).

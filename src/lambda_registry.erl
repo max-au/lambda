@@ -41,22 +41,22 @@
 %%  locally registered process name can be used.
 -type location() :: pid() | {atom(), node()}.
 
-%% Point: node in the registry network
--type point() :: {location(), lambda_epmd:address()}.
+%% Points: maps location to the address
+-type points() :: #{location() => lambda_epmd:address()}.
 
--export_type([point/0]).
+-export_type([points/0]).
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server outside of supervision hierarchy.
 %% Useful for testing in conjunction with 'peer'.
--spec start([point()]) -> gen:start_ret().
+-spec start(points()) -> gen:start_ret().
 start(Bootstrap) ->
     gen_server:start(?MODULE, Bootstrap, []).
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link([point()]) -> gen:start_ret().
+-spec start_link(points()) -> gen:start_ret().
 start_link(Bootstrap) ->
     gen_server:start_link(?MODULE, Bootstrap, []).
 
@@ -130,9 +130,9 @@ unsubscribe(Proc) ->
 
 -record(lambda_registry_state, {
     %% self address
-    self :: point(),
+    self :: lambda_epmd:address(),
     %% authority processes + authority addresses to peer discovery
-    authority = #{} :: #{pid() => point()},
+    authority = #{} :: #{pid() => lambda_epmd:address()},
     %% local names, registered globally
     registered = #{} :: #{pid() => {name(), reference()}},
     %% subscriptions for global updates (bi-map would fit better)
@@ -141,10 +141,10 @@ unsubscribe(Proc) ->
 
 -type state() :: #lambda_registry_state{}.
 
--spec init([point()]) -> {ok, state()}.
+-spec init(points()) -> {ok, state()}.
 init(Bootstrap) ->
     %% bootstrap discovery: attempt to find authorities
-    {ok, Self} = lambda_epmd:get_node(node()),
+    Self = lambda_epmd:get_node(node()),
     %% initial discovery
     discover(Bootstrap, Self),
     {ok, #lambda_registry_state{self = Self}}.

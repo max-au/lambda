@@ -33,13 +33,13 @@
 %% @doc
 %% Starts the server outside of supervision hierarchy.
 %% Useful for testing in conjunction with peer.
--spec start(Neighbours :: [lambda_registry:point()]) -> gen:start_ret().
+-spec start(Neighbours :: lambda_registry:points()) -> gen:start_ret().
 start(Neighbours) ->
     gen_server:start({local, ?MODULE}, ?MODULE, [Neighbours], []).
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link([lambda_registry:point()]) -> gen:start_ret().
+-spec start_link(lambda_registry:points()) -> gen:start_ret().
 start_link(Neighbours) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [Neighbours], []).
 
@@ -76,11 +76,11 @@ registries() ->
 
 -type state() :: #lambda_authority_state{}.
 
--spec init([Neighbours :: lambda_registry:bootstrap()]) -> {ok, state()}.
+-spec init([Neighbours :: lambda_registry:points()]) -> {ok, state()}.
 init([Neighbours]) ->
     %% bootstrap discovery. Race condition possible, when all nodes
     %%  start at once, and never retry.
-    {ok, Self} = lambda_epmd:get_node(node()),
+    Self = lambda_epmd:get_node(node()),
     maps:map(
         fun (Location, Addr) ->
             ok = lambda_epmd:set_node(Location, Addr),

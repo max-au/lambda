@@ -20,25 +20,28 @@ start_link() ->
 init([]) ->
     %% allow 2 restarts every 10 seconds
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
+    {ok, App} = application:get_application(),
+    %% Bootstrap (both authority and registry)
+    %% Bootstrap format is a map of {registered_name, node} => epmd_address.
+    Bootstrap = application:get_env(App, bootstrap, #{}),
     %% Authority: start if configured
     %% Deliberately crash if misconfigured (non-boolean)
-    Authority = case application:get_env(authority) of
+    Authority = case application:get_env(App, authority, false) of
                     true ->
                         [#{
                             id => lambda_authority,
-                            start => {lambda_authority, start_link, []},
+                            start => {lambda_authority, start_link, [Bootstrap]},
                             modules => [lambda_authority]
                         }];
                     false ->
-                        [];
-                    undefined ->
                         []
                 end,
-    %%,
+    %% Registry starts independently from authority. The same
+    %%  node can have both running.
     RegistrySpecs = [
         #{
             id => lambda_registry,
-            start => {lambda_registry, start_link, []},
+            start => {lambda_registry, start_link, [Bootstrap]},
             modules => [lambda_registry]
         }
     ],
