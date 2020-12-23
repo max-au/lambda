@@ -204,7 +204,7 @@ handle_info({demand, Demand, Server}, #lambda_state{pid_to_index = Pti, index_to
             inc(Index, Demand, ServerCount),
             {noreply, State#lambda_state{capacity = Cap + Demand}};
         error ->
-            monitor(Server),
+            erlang:monitor(process, Server),
             case State#lambda_state.free of
                 [Free] ->
                     %% reached maximum size: double the array size
@@ -294,14 +294,6 @@ queue_open() ->
             % ?LOG_DEBUG("Queue blocked", []),
             queue()
     end.
-
--ifdef(TEST).
-monitor(Pid) ->
-    get(disable_server_monitor) =:= true orelse erlang:monitor(process, Pid).
--else.
-monitor(Pid) ->
-    erlang:monitor(process, Pid).
--endif.
 
 %% Implementation specifics:
 %%  * unspecified value is returned for lower_bound when array is empty
