@@ -59,16 +59,11 @@ start_link(Scope) when is_atom(Scope) ->
 %%--------------------------------------------------------------------
 %% API
 
-sell(Brokers, Capacity) ->
-    Msg = {sell, Capacity, self()},
-    ?LOG_DEBUG("publishing ~b into ~p", [Capacity, Brokers]),
-    [gen_server:cast(Broker, Msg) || Broker <- Brokers],
-    ok.
+sell(Broker, Capacity) ->
+    erlang:send(Broker, {sell, Capacity, self()}, [noconnect, nosuspend]).
 
-buy(Brokers, Capacity) ->
-    Msg = {buy, Capacity, self()},
-    ?LOG_DEBUG("orders ~b from ~p", [Capacity, Brokers]),
-    [gen_server:cast(Broker, Msg) || Broker <- Brokers].
+buy(Broker, Capacity) ->
+    erlang:send(Broker, {buy, Capacity, self()}, [noconnect, nosuspend]).
 
 %%--------------------------------------------------------------------
 %% gen_server implementation
@@ -89,16 +84,20 @@ init(Scope) ->
     {ok, #lambda_broker_state{}}.
 
 handle_call(_Req, _From, #lambda_broker_state{}) ->
-    error(badarg).
+    error(notsup).
 
-handle_cast({buy, Capacity, From}, #lambda_broker_state{servers = Servers} = State) ->
+handle_cast(_Req, _State) ->
+    error(notsup).
+
+handle_info({buy, Capacity, From}, #lambda_broker_state{servers = Servers} = State) ->
     %% match existing capacity
     ?LOG_DEBUG("~p: buys ~b", [From, Capacity]),
     buy_impl(From, Capacity, maps:next(maps:iterator(Servers)), [], State);
-handle_cast({sell, Capacity, Server}, #lambda_broker_state{orders = Orders} = State) ->
+
+handle_info({sell, Capacity, Server}, #lambda_broker_state{orders = Orders} = State) ->
     %% match any outstanding orders for this scope
     ?LOG_DEBUG("~p: sells ~b", [Server, Capacity]),
-    sell_impl(Capacity, Server, maps:next(maps:iterator(Orders)), State).
+    sell_impl(Capacity, Server, maps:next(maps:iterator(Orders)), State);
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_broker_state{servers = Servers} = State) ->
     case maps:take(Pid, Servers) of

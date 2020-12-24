@@ -33,12 +33,15 @@ all() ->
 
 init_per_suite(Config) ->
     logger:set_primary_config(level, all),
-    {ok, Pg} = pg:start(pg),
-    [{pg, Pg} | Config].
+    {ok, Physical} = lambda_epmd:start_link(),
+    erlang:unlink(Physical),
+    {ok, Registry} = lambda_registry:start(#{}),
+    [{registry, Registry}, {physical, Physical} | Config].
 
 end_per_suite(Config) ->
-    gen_server:stop(?config(pg, Config)),
-    proplists:delete(pg, Config).
+    gen_server:stop(?config(registry, Config)),
+    gen_server:stop(?config(physical, Config)),
+    proplists:delete(registry, proplists:delete(physical, Config)).
 
 init_per_testcase(TestCase, Config) ->
     {ok, Pid} = lambda_broker:start_link(TestCase),
@@ -57,8 +60,8 @@ basic() ->
 basic(Config) when is_list(Config) ->
     Cap = 100,
     Self = self(),
-    lambda_broker:sell(?FUNCTION_NAME, Cap),
-    lambda_broker:buy(?FUNCTION_NAME, Cap),
+    lambda_broker:sell(?config(broker, Config), Cap),
+    lambda_broker:buy(?config(broker, Config), Cap),
     receive
         {order, [{Self, Cap}]} ->
             ok;

@@ -8,7 +8,7 @@
 %%  Capacity discovery is done with lambda_broker interface.
 %%
 %% @end
--module(lambda).
+-module(lambda_plb).
 -author("maximfca@gmail.com").
 
 %% API
@@ -259,17 +259,14 @@ order(Scope, Plb, Cap) ->
     %% subscribe to broker updates
     Brokers = lambda_registry:subscribe(Scope, self()),
     %% send requests to already known brokers
-    [send_order(Broker, Plb, Cap) || Broker <- Brokers],
+    [lambda_broker:buy(Broker, Cap) || Broker <- Brokers],
     order_loop(Scope, Plb, Cap, Brokers).
-
-send_order(Broker, Plb, Cap) ->
-    erlang:send(Broker, {order, Plb, Cap}, [noconnect, nosuspend]).
 
 order_loop(Scope, Plb, Cap, Brokers) ->
     receive
         {update, NewBrokers} ->
             New = NewBrokers -- Brokers,
-            [send_order(Broker, Plb, Cap) || Broker <- New],
+            [lambda_broker:buy(Broker, Cap) || Broker <- New],
             order_loop(Scope, Plb, Cap, NewBrokers);
         stop ->
             %% lambda has enough capacity

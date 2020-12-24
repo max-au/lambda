@@ -1,7 +1,7 @@
 %% @doc
 %%     Smoke test for probabilistic load balancer.
 %% @end
--module(lambda_SUITE).
+-module(lambda_plb_SUITE).
 -author("maximfca@gmail.com").
 
 %% Test server callbacks
@@ -46,7 +46,7 @@ all() ->
     [lb, fail_capacity_wait, call_fail, packet_loss].
 
 init_per_suite(Config) ->
-    Saviour = proc_lib:start_link(?MODULE, saviour, []),
+    Saviour = proc_lib:start(?MODULE, saviour, []),
     Config1 = [{level, maps:get(level, logger:get_primary_config())}, {saviour, Saviour}  | Config],
     % logger:set_primary_config(level, all),
     case erlang:is_alive() of
@@ -54,10 +54,8 @@ init_per_suite(Config) ->
             Config1;
         false ->
             LongShort = case inet_db:res_option(domain) of
-                            [] ->
-                                shortnames;
-                            Domain when is_list(Domain) ->
-                                longnames
+                            [] -> shortnames;
+                            Domain when is_list(Domain) -> longnames
                         end,
             case net_kernel:start([master, LongShort]) of
                 {ok, Pid} ->
@@ -90,10 +88,10 @@ end_per_suite(Config) ->
     proplists:delete(level, Config2).
 
 init_per_testcase(throughput, Config) ->
-    {ok, Lb} = lambda:start_link(?MODULE, #{low => 0, high => 10000000}),
+    {ok, Lb} = lambda_plb:start_link(?MODULE, #{low => 0, high => 10000000}),
     [{lb, Lb} | Config];
 init_per_testcase(_TestCase, Config) ->
-    {ok, Lb} = lambda:start_link(?MODULE),
+    {ok, Lb} = lambda_plb:start_link(?MODULE),
     [{lb, Lb} | Config].
 
 end_per_testcase(_TestCase, Config) ->
@@ -151,7 +149,7 @@ flush_via(Via, Pid) ->
 multi_echo(0) ->
     ok;
 multi_echo(Count) ->
-    lambda:call(?MODULE, echo, [[]], infinity),
+    lambda_plb:call(?MODULE, echo, [[]], infinity),
     multi_echo(Count - 1).
 
 make_node(Args, Capacity) ->
@@ -191,10 +189,10 @@ lb(Config) when is_list(Config) ->
     Peers = [make_node(["+S", integer_to_list(Seq)], Seq) || Seq <- lists:seq(1, WorkerCount)],
     %% here we expect at least some capacity to pile up
     Lb = ?config(lb, Config),
-    ?assert(lambda:capacity(Lb) > 0),
+    ?assert(lambda_plb:capacity(Lb) > 0),
     %% fire samples: spawn a process per request
     Spawned = [spawn_monitor(
-        fun () -> [lambda:call(?MODULE, pi, [Precision], infinity) || _ <- lists:seq(1, SampleCount div ClientConcurrency)] end)
+        fun () -> [lambda_plb:call(?MODULE, pi, [Precision], infinity) || _ <- lists:seq(1, SampleCount div ClientConcurrency)] end)
         || _ <- lists:seq(1, ClientConcurrency)],
     wait_complete(Spawned),
     %% ensure weights and total counts expected
@@ -228,10 +226,10 @@ fail_capacity_wait(Config) when is_list(Config) ->
     %%  are no registered names clashes)
     {ok, Worker} = lambda_server:start_link(?MODULE, Concurrency),
     %% spawn just enough requests to exhaust tokens
-    Spawned = [spawn_monitor(fun () -> lambda:call(?MODULE, sleep, [Delay], infinity) end)
+    Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
     %% spawn and kill another batch - so tokens are sent to dead processes
-    Dead = [spawn_monitor(fun () -> lambda:call(?MODULE, sleep, [1], 1) end)
+    Dead = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [1], 1) end)
         || _ <- lists:seq(1, Concurrency)],
     wait_complete(Dead),
     %% ^^^ processes spawned above will never be executed remotely
@@ -239,7 +237,7 @@ fail_capacity_wait(Config) when is_list(Config) ->
     timer:sleep(Delay * 2),
     %% then, spawn more requests and ensure they pass
     Started = erlang:monotonic_time(),
-    Spawned1 = [spawn_monitor(fun () -> lambda:call(?MODULE, sleep, [Delay], infinity) end)
+    Spawned1 = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
     wait_complete(Spawned ++ Spawned1),
     Actual = erlang:convert_time_unit(erlang:monotonic_time() - Started, native, millisecond),
@@ -255,7 +253,7 @@ call_fail() ->
 call_fail(Config) when is_list(Config) ->
     Concurrency = 5,
     {ok, Worker} = lambda_server:start_link(?MODULE, Concurrency),
-    Spawned = [spawn_monitor(fun () -> lambda:call(?MODULE, exit, [kill], infinity) end)
+    Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, exit, [kill], infinity) end)
         || _ <- lists:seq(1, Concurrency * 5)],
     wait_complete(Spawned),
     %% ensure all requests were processed
@@ -271,13 +269,13 @@ packet_loss(Config) when is_list(Config) ->
     Lb = ?config(lb, Config),
     flush_via(Worker, ?config(broker, Config)), %% this flushes broker (order sent to plb)
     flush_via(Lb, Worker), %% this flushes plb and worker via plb
-    ?assertEqual(Concurrency, lambda:capacity(Lb)),
+    ?assertEqual(Concurrency, lambda_plb:capacity(Lb)),
     %% waste all tokens, using white-box testing
     [Lb ! {'$gen_call', {self(), erlang:make_ref()}, token} || _ <- lists:seq(1, Concurrency)],
     %% sync plb, ensuring tokens were wasted
     _ = sys:get_state(Lb),
     %% spawn requests and ensure they pass in a reasonable time
-    Spawned = [spawn_monitor(fun () -> lambda:call(?MODULE, pi, [3], infinity) end)
+    Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, pi, [3], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
     wait_complete(Spawned),
     %% ensure all requests were processed
@@ -306,7 +304,7 @@ measure(Lb, Broker, CapPerNode, Nodes) ->
     %% ensure expected capacity achieved
     [flush_via(W, Broker) || W <- [Worker | Workers]],
     [flush_via(Lb, W) || W <- [Worker | Workers]],
-    ?assertEqual(CapPerNode * Nodes, lambda:capacity(Lb)),
+    ?assertEqual(CapPerNode * Nodes, lambda_plb:capacity(Lb)),
     %% dispatch predefined amount of calls with some concurrency enabled
     [timed(Callers, CallsPerCaller, CapPerNode, Nodes)
         || Callers <- [1, 2, 4, 8, 16, 24, 32], CallsPerCaller <- [5000]],
@@ -318,7 +316,7 @@ measure(Lb, Broker, CapPerNode, Nodes) ->
     flush_via(Lb, Broker),
     flush_via(Broker, Lb),
     %% ensure no capacity left in plb
-    ?assertEqual(0, lambda:capacity(Lb)),
+    ?assertEqual(0, lambda_plb:capacity(Lb)),
     ok.
 
 timed(Callers, CallsPerCaller, CapPerNode, Nodes) ->
