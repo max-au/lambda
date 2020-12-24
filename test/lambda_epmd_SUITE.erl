@@ -67,18 +67,16 @@ basic(Config) when is_list(Config) ->
     %% try to connect before adding the IP/Port to epmd, ensure failure
     false = net_kernel:connect_node(Node),
     %% now add the port/IP and ensure connection works
-    {ok, Addr} = peer:apply(Peer, lambda_epmd, get_node, [Node]),
+    Addr = peer:apply(Peer, lambda_epmd, get_node, [Node]),
+    ?assertNotEqual(error, Addr),
     ok = lambda_epmd:set_node(Node, Addr),
     true = net_kernel:connect_node(Node),
     %% testing reverse access (IP address taken from connection)
-    {ok, {_, _, ListenPort}} = lambda_epmd:get_node(node()),
+    {ip, _, ListenPort} = lambda_epmd:get_node(node()),
     %% figure out what the peer has connected to
     SelfPort = rpc:call(Node, ets, lookup_element, [sys_dist, node(), 6]),
     {ok, {Ip, _EphemeralPort}} = rpc:call(Node, inet, peername, [SelfPort]),
-    SelfAddr = case Ip of
-                   V4 when tuple_size(V4) =:= 4 -> {inet, Ip, ListenPort};
-                   V6 when tuple_size(V6) =:= 8 -> {inet6, Ip, ListenPort}
-               end,
+    SelfAddr = {ip, Ip, ListenPort},
     %% disconnect, remove mapping
     true = net_kernel:disconnect(Node),
     ok = lambda_epmd:del_node(Node),

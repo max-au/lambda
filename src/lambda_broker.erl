@@ -32,7 +32,6 @@
 
 %% API
 -export([
-    start/1,
     start_link/1,
     sell/2,
     buy/2
@@ -56,10 +55,6 @@
 -spec start_link(module()) -> gen:start_ret().
 start_link(Scope) when is_atom(Scope) ->
     gen_server:start_link(?MODULE, Scope, []).
-
--spec start(module()) -> gen:start_ret().
-start(Scope) when is_atom(Scope) ->
-    gen_server:start(?MODULE, Scope, []).
 
 %%--------------------------------------------------------------------
 %% API

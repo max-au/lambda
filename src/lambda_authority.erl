@@ -100,7 +100,6 @@ handle_cast(_Cast, _State) ->
 handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, registries = Regs} = State) ->
     _MRef = monitor(process, Peer),
     %% exchange known registries - including ourself!
-    io:format(standard_error, "~s authority: from ~p (~200p)~n", [node(), Peer, Addr]),
     erlang:send(Peer, {exchange, Auth#{self() => Self}, Regs}, [noconnect]),
     {noreply, State#lambda_authority_state{authorities = Auth#{Peer => peer_addr(Addr)}}};
 
@@ -118,7 +117,6 @@ handle_info({exchange, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self,
         fun (NewAuth, _Addr, Existing) when is_map_key(NewAuth, Existing) ->
                 Existing;
             (NewAuth, Addr, Existing) ->
-                io:format(standard_error, "~s exchange connect authority: ~200p (~200p)~n", [node(), NewAuth, Addr]),
                 _MRef = erlang:monitor(process, NewAuth),
                 Existing#{NewAuth => Addr}
         end, Others, MoreAuth),
@@ -128,7 +126,7 @@ handle_info({exchange, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self,
         fun (Reg, _Addr, ExReg) when is_map_key(Reg, ExReg) ->
                 ExReg;
             (Reg, Addr, ExReg) ->
-                io:format(standard_error, "~s exchange connect reg: ~200p (~200p)~n", [node(), Reg, Addr]),
+                lambda_epmd:set_node(node(Reg), Addr), %% TODO: may need some overload protection for mass exchange
                 _MRef = erlang:monitor(process, Reg),
                 %% don't suspend the authority to avoid lock-up when dist connection busy
                 %% TODO: figure out how dist can be busy when we have never sent anything before

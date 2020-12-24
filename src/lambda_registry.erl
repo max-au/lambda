@@ -112,10 +112,11 @@ send(Name, Msg) ->
 %%--------------------------------------------------------------------
 %% Extended API
 
-%% @doc Subscribes Proc to updates from Name.
-%%  When a list of processes in Name changes, authorities will send
-%%  an update which will be channeled to Proc (once).
--spec subscribe(name(), pid()) -> ok | already_subscribed.
+%% @doc Subscribes Proc to updates from Name, returning already
+%%      known brokers serving the name.
+%%      When a list of brokers in Name changes, authorities will send
+%%      an update which will be channeled to Proc (once).
+-spec subscribe(name(), pid()) -> [pid()].
 subscribe(Name, Proc) ->
     gen_server:call(?MODULE, {subscribe, Name, Proc}).
 
@@ -176,7 +177,8 @@ handle_call({subscribe, _Name, Proc}, _From, #lambda_registry_state{subscription
 handle_call({subscribe, Name, Proc}, _From, #lambda_registry_state{authority = Authority, subscriptions = Remote} = State) ->
     MRef = erlang:monitor(process, Proc),
     broadcast(Authority, {subscribe, Name, Proc}),
-    {reply, ok, State#lambda_registry_state{subscriptions = Remote#{Proc => {Name, MRef}}}};
+    Brokers = [Pid || {Pid, _} <- maps:values(State#lambda_registry_state.registered)], %% TODO: actually return brokers
+    {reply, Brokers, State#lambda_registry_state{subscriptions = Remote#{Proc => {Name, MRef}}}};
 
 handle_call({unsubscribe, Proc}, _From, #lambda_registry_state{subscriptions = Remote} = State) ->
     case maps:take(Proc, Remote) of

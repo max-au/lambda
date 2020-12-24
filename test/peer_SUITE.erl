@@ -69,7 +69,7 @@ init_per_group(dist, Config) ->
                             Domain when is_list(Domain) ->
                                 longnames
                         end,
-            {ok, Pid} = net_kernel:start([lists:concat(["dist_", os:getpid()]), LongShort]),
+            {ok, Pid} = net_kernel:start([list_to_atom("dist_" ++ os:getpid()), LongShort]),
             [{net_kernel, Pid} | Config]
     end;
 init_per_group(_Group, Config) ->
@@ -122,9 +122,9 @@ dist_io_redirect(Config) when is_list(Config) ->
     rpc:call(Node, io, format, ["test."]),
     ?assertEqual(ok, peer:send(Pid, init, {stop, stop})),
     rpc:call(Node, erlang, apply, [io, format, ["second."]]),
+    peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
-    peer:stop(Pid),
     ?assertEqual(["test.", "second."], Texts).
 
 dist_up_down() ->
@@ -139,9 +139,9 @@ dist_up_down(Config) when is_list(Config) ->
     ?assertEqual(ok, peer:connect(Pid, 5000)),
     ?assertEqual(ok, peer:disconnect(Pid, 5000)),
     ?assertEqual(ok, peer:connect(Pid, 5000)),
+    peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
-    peer:stop(Pid),
     ?assertEqual(["out"], Texts).
 
 %% -------------------------------------------------------------------
@@ -195,10 +195,10 @@ detached(Config) when is_list(Config) ->
     ct:capture_start(),
     peer:apply(Pid, io, format, ["one."]),
     peer:apply(Pid, erlang, apply, [io, format, ["two."]]),
+    peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
     %% just stop
-    peer:stop(Pid),
     ?assertEqual(["one.", "two."], Texts).
 
 dyn_peer() ->
@@ -229,12 +229,11 @@ init_debug(Config) when is_list(Config) ->
     ct:capture_start(),
     {ok, Pid} = peer:start_link(#{node => Node,
         connection => standard_io, args => ["-init_debug"]}),
+    peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
     %% every boot script starts with this
-    ?assertEqual("{progress,preloaded}\r\n", hd(Texts)),
-    %% shutdown node
-    peer:stop(Pid).
+    ?assertEqual("{progress,preloaded}\r\n", hd(Texts)).
 
 io_redirect() ->
     [{doc, "Tests i/o redirection working for std"}].

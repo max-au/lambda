@@ -31,6 +31,11 @@
     exit/1
 ]).
 
+%% Internal exports
+-export([
+    saviour/0
+]).
+
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
@@ -41,9 +46,8 @@ all() ->
     [lb, fail_capacity_wait, call_fail, packet_loss].
 
 init_per_suite(Config) ->
-    {ok, Pg} = pg:start(pg),
-    {ok, Broker} = lambda_broker:start(?MODULE),
-    Config1 = [{level, maps:get(level, logger:get_primary_config())}, {pg, Pg}, {broker, Broker} | Config],
+    Saviour = proc_lib:start_link(?MODULE, saviour, []),
+    Config1 = [{level, maps:get(level, logger:get_primary_config())}, {saviour, Saviour}  | Config],
     % logger:set_primary_config(level, all),
     case erlang:is_alive() of
         true ->
@@ -66,10 +70,14 @@ init_per_suite(Config) ->
     end.
 
 end_per_suite(Config) ->
-    gen_server:stop(proplists:get_value(broker, Config)),
-    gen_server:stop(proplists:get_value(pg, Config)),
-    Config1 = proplists:delete(broker, proplists:delete(pg, Config)),
-    % gen_event:stop(lambda_event),
+    Saviour = proplists:get_value(saviour, Config),
+    MRef = erlang:monitor(process, Saviour),
+    Saviour ! stop,
+    receive
+        {'DOWN', MRef, process, Saviour, _} ->
+            ok
+    end,
+    Config1 = proplists:delete(saviour, Config),
     Config2 =
         case proplists:get_value(net_kernel, Config) of
             undefined ->
@@ -122,6 +130,18 @@ sleep(Time) ->
 %%--------------------------------------------------------------------
 %% convenience primitives
 
+saviour() ->
+    {ok, Physical} = lambda_epmd:start_link(),
+    {ok, Registry} = lambda_registry:start_link(#{}),
+    {ok, Broker} = lambda_broker:start_link(?MODULE),
+    proc_lib:init_ack(self()),
+    receive
+        stop ->
+            gen:stop(Broker),
+            gen:stop(Registry),
+            gen:stop(Physical)
+    end.
+
 flush(Pid) ->
     sys:get_state(Pid).
 
@@ -139,10 +159,7 @@ make_node(Args, Capacity) ->
     {ok, Peer} = peer:start_link(#{node => Node,
         args => Args, connection => standard_io, wait_boot => 5000}),
     true = rpc:call(Node, code, add_path, [filename:dirname(code:which(?MODULE))]),
-    {ok, _} = rpc:call(Node, pg, start, [pg]),
-    %% sync pg's
-    sys:get_state(pg),
-    _ = rpc:call(Node, sys, get_state, [pg]),
+    {ok, _Apps} = rpc:call(Node, application, ensure_all_started, [lambda]),
     {ok, Worker} = rpc:call(Node, lambda_server, start, [?MODULE, Capacity]),
     {Node, Peer, Worker, Capacity}.
 

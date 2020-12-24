@@ -151,7 +151,7 @@ capacity(Scope) ->
     %%  it makes performance better
     %% size = 1 :: pos_integer(),
     %% list of free indices, for amortised O(1) insertion
-    free = [0] :: [pos_integer()],
+    free = [0] :: [non_neg_integer()],
     %% queue: process that accepts 'wait' requests
     queue :: pid(),
     %% outstanding broker order, when capacity falls below "low",

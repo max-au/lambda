@@ -48,13 +48,15 @@ start_link(Name, Capacity) ->
     brokers = #{} :: #{pid() => reference()}
 }).
 
-init([Name, Capacity]) ->
+init([Scope, Capacity]) ->
     %% monitor brokers, globally
-    ok = lambda_registry:subscribe(Name, self()),
+    Brokers = lambda_registry:subscribe(Scope, self()),
+    BrokerMons = maps:from_list([{B, erlang:monitor(process, B)} || B <- Brokers]),
     %% publish total capacity
-    publish(Name, Capacity),
+    lambda_broker:sell(Brokers, Capacity),
+    %% trap exists, as server acts as a supervisor
     process_flag(trap_exit, true),
-    {ok, #lambda_server_state{scope = Name, capacity = Capacity}}.
+    {ok, #lambda_server_state{scope = Scope, capacity = Capacity, brokers = BrokerMons}}.
 
 handle_call(get_count, _From, #lambda_server_state{conns = Conns} = State) ->
     Sum = lists:foldl(
@@ -66,30 +68,26 @@ handle_call(get_count, _From, #lambda_server_state{conns = Conns} = State) ->
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({'EXIT', Pid, _Reason}, #lambda_server_state{capacity = Capacity, conns = Conns} = State) ->
+handle_info({'EXIT', Pid, _Reason}, #lambda_server_state{capacity = Capacity, conns = Conns, brokers = Brokers} = State) ->
     %% update brokers for changed capacity
-    ?LOG_DEBUG("Server ~p disconnected", [Pid]),
+    ?LOG_DEBUG("Client ~p disconnected", [Pid]),
     {Cap, NewConns} = maps:take(Pid, Conns),
     NewCap = Capacity + Cap,
-    publish(State#lambda_server_state.scope, NewCap),
+    lambda_broker:sell(maps:keys(Brokers), NewCap),
     {noreply, State#lambda_server_state{capacity = NewCap, conns = NewConns}};
 
-handle_info({connect, To, Cap}, #lambda_server_state{conns = Conns, capacity = Capacity} = State) ->
-    ?LOG_DEBUG("Connect: ~p", [To]),
+handle_info({connect, To, Cap}, #lambda_server_state{conns = Conns, capacity = Capacity, brokers = Brokers} = State) ->
+    ?LOG_DEBUG("Client connecting from: ~p", [To]),
     Allowed = min(Cap, Capacity),
     %% act as a supervisor here, starting child processes (connection handlers)
     {ok, Conn} = proc_lib:start_link(?MODULE, server, [To, Allowed]),
     %% publish capacity update to all brokers
     NewCap = Capacity - Cap,
-    publish(State#lambda_server_state.scope, NewCap),
+    lambda_broker:sell(maps:keys(Brokers), NewCap),
     {noreply, State#lambda_server_state{capacity = NewCap, conns = Conns#{Conn => Cap}}}.
 
 %%--------------------------------------------------------------------
 %% Broker connection
-
-publish(Scope, Capacity) ->
-    lambda_broker:sell(Scope, Capacity).
-
 
 %%--------------------------------------------------------------------
 %% Server side implementation: server process

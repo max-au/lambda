@@ -57,8 +57,7 @@ start_node(Bootstrap, Authority) ->
     Bootstrap =/= #{} andalso
         begin
             {_, BootNodes} = lists:unzip(maps:keys(Bootstrap)),
-            ok = peer:apply(Peer, ?MODULE, wait_connection, [BootNodes]),
-            ?assertEqual(BootNodes, peer:apply(Peer, erlang, nodes, []))
+            ok = peer:apply(Peer, ?MODULE, wait_connection, [BootNodes])
         end,
     unlink(Peer),
     {Peer, Node}.
@@ -157,14 +156,14 @@ peer(Config) when is_list(Config) ->
     %% start extra nodes
     %% Peers = [start_node(Bootstrap, false) || _ <- lists:seq(1, 4)],
     Peers = lambda_async:pmap([{fun start_node/2, [Bootstrap, false]} || _ <- lists:seq(1, 4)]),
-    {_, ExpectedWorkers} = lists:unzip(Peers),
+    {Peers1, ExpectedWorkers} = lists:unzip(Peers),
     %% ensure they all find the authority
     WorkerNodes = peer:apply(AuthorityPeer, erlang, nodes, []),
     ?assertEqual([], ExpectedWorkers -- WorkerNodes, "missing initial nodes"),
     ?assertEqual([], WorkerNodes -- ExpectedWorkers, "unexpected initial nodes"),
     %% start more nodes, don't give them authority addresses
     NonAuth = lambda_async:pmap([{fun start_node/2, [Bootstrap, false]} || _ <- lists:seq(1, 4)]),
-    {_, NonAuthWN} = lists:unzip(NonAuth),
+    {Peers2, NonAuthWN} = lists:unzip(NonAuth),
     %% verify there are 8 nodes connected to this authority
     AllWorkerNodes = peer:apply(AuthorityPeer, erlang, nodes, []),
     ?assertEqual([], (ExpectedWorkers ++ NonAuthWN) -- AllWorkerNodes, "missing extra nodes"),
@@ -178,7 +177,10 @@ peer(Config) when is_list(Config) ->
     AllNodes2 = peer:apply(SecondAuthPeer, erlang, nodes, []) ++ [SecondAuthNode],
     ?assertEqual(lists:sort(AllNodes), lists:sort(AllNodes2)),
     ?assertEqual(length(AllNodes), 10),
+    %% ensure nodes are not mesh-connected
+    Authorities = [AuthorityNode, SecondAuthNode],
+    [?assertEqual(Authorities, peer:apply(Peer, erlang, nodes, [])) || Peer <- Peers1 ++ Peers2],
     %% shut all down
-    [peer:stop(P) || {P, _} <- Peers ++ NonAuth],
+    [peer:stop(P) || P <- Peers1 ++ Peers2],
     [peer:stop(P) || P <- [AuthorityPeer, SecondAuthPeer]],
     ok.

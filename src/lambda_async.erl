@@ -59,7 +59,7 @@ async(Id, Fun) ->
     end.
 
 %% @doc Completes async requests for default context.
--spec wait(timeout()) -> ok.
+-spec wait(timeout()) -> [term()].
 wait(Timeout) ->
     wait(async, Timeout).
 
@@ -67,7 +67,7 @@ wait(Timeout) ->
 %%      Resets trap_exit to the state it was before, removed context from
 %%      process dictionary.
 %%      In case of a timeout, remaining processes are forcefully exited (killed).
--spec wait(Id :: term(), timeout()) -> #{term() => term()}.
+-spec wait(Id :: term(), timeout()) -> [term()].
 wait(Id, infinity) ->
     wait_impl(Id, undefined);
 wait(Id, Timeout) ->
