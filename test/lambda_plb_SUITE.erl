@@ -46,46 +46,10 @@ all() ->
     [lb, fail_capacity_wait, call_fail, packet_loss].
 
 init_per_suite(Config) ->
-    Saviour = proc_lib:start(?MODULE, saviour, []),
-    Config1 = [{level, maps:get(level, logger:get_primary_config())}, {saviour, Saviour}  | Config],
-    % logger:set_primary_config(level, all),
-    case erlang:is_alive() of
-        true ->
-            Config1;
-        false ->
-            LongShort = case inet_db:res_option(domain) of
-                            [] -> shortnames;
-                            Domain when is_list(Domain) -> longnames
-                        end,
-            case net_kernel:start([master, LongShort]) of
-                {ok, Pid} ->
-                    [{net_kernel, Pid} | Config1];
-                {error, {{shutdown, {failed_to_start_child, net_kernel, {'EXIT', nodistribution}}}, _}} ->
-                    os:cmd("epmd -daemon"),
-                    {ok, Pid1} = net_kernel:start([master, LongShort]),
-                    [{net_kernel, Pid1} | Config1]
-            end
-    end.
+    lambda_test:start_local().
 
 end_per_suite(Config) ->
-    Saviour = proplists:get_value(saviour, Config),
-    MRef = erlang:monitor(process, Saviour),
-    Saviour ! stop,
-    receive
-        {'DOWN', MRef, process, Saviour, _} ->
-            ok
-    end,
-    Config1 = proplists:delete(saviour, Config),
-    Config2 =
-        case proplists:get_value(net_kernel, Config) of
-            undefined ->
-                Config1;
-            Pid when is_pid(Pid) ->
-                net_kernel:stop(),
-                proplists:delete(net_kernel, Config1)
-        end,
-    logger:set_primary_config(level, ?config(level, Config2)),
-    proplists:delete(level, Config2).
+    lambda_test:end_local().
 
 init_per_testcase(throughput, Config) ->
     {ok, Lb} = lambda_plb:start_link(?MODULE, #{low => 0, high => 10000000}),
@@ -129,15 +93,15 @@ sleep(Time) ->
 %% convenience primitives
 
 saviour() ->
-    {ok, Physical} = lambda_epmd:start_link(),
+    {ok, Authority} = lambda_authority:start_link(#{}),
     {ok, Registry} = lambda_registry:start_link(#{}),
     {ok, Broker} = lambda_broker:start_link(?MODULE),
-    proc_lib:init_ack(self()),
+    proc_lib:init_ack({ok, self()}),
     receive
         stop ->
             gen:stop(Broker),
             gen:stop(Registry),
-            gen:stop(Physical)
+            gen:stop(Authority)
     end.
 
 flush(Pid) ->
@@ -153,12 +117,21 @@ multi_echo(Count) ->
     multi_echo(Count - 1).
 
 make_node(Args, Capacity) ->
+    %% technically it would be better to make a release of "lambda"
+    %%  and start it with corresponding vm.args and sys.config. But this
+    %%  will make tests slightly more tangled than needed, so simulate
+    %%  release locally
     Node = peer:random_name(),
+    CP = filename:dirname(code:which(?MODULE)),
     {ok, Peer} = peer:start_link(#{node => Node,
-        args => Args, connection => standard_io, wait_boot => 5000}),
-    true = rpc:call(Node, code, add_path, [filename:dirname(code:which(?MODULE))]),
-    {ok, _Apps} = rpc:call(Node, application, ensure_all_started, [lambda]),
-    {ok, Worker} = rpc:call(Node, lambda_server, start, [?MODULE, Capacity]),
+        args => ["-epmd_module", "lambda_epmd", "-start_epmd", "false", "-pa", CP] ++ Args,
+        connection => standard_io, wait_boot => 5000}),
+    %% start lambda application
+    SelfBoot = #{{lambda_authority, node()} => lambda_epmd:get_node(node())},
+    ok = peer:apply(Peer, application, set_env, [lambda, bootstrap, SelfBoot, [{persistent, true}]]),
+    {ok, _Apps} = peer:apply(Peer, application, ensure_all_started, [lambda]),
+    %% Peer will connect back to us at some point later, courtesy of lambda_registry and authority
+    {ok, Worker} = peer:apply(Peer, lambda_server, start, [?MODULE, Capacity]),
     {Node, Peer, Worker, Capacity}.
 
 wait_complete(Procs) when is_list(Procs) ->
@@ -187,9 +160,9 @@ lb(Config) when is_list(Config) ->
     ?assertEqual(0, SampleCount rem ClientConcurrency),
     %% start worker nodes, when every next node has +1 more capacity
     Peers = [make_node(["+S", integer_to_list(Seq)], Seq) || Seq <- lists:seq(1, WorkerCount)],
-    %% here we expect at least some capacity to pile up
+    %% wait for capacity from all 4 nodes
     Lb = ?config(lb, Config),
-    ?assert(lambda_plb:capacity(Lb) > 0),
+    ?assertEqual(lists:sum(lists:seq(1, WorkerCount)), lambda_plb:capacity(Lb)),
     %% fire samples: spawn a process per request
     Spawned = [spawn_monitor(
         fun () -> [lambda_plb:call(?MODULE, pi, [Precision], infinity) || _ <- lists:seq(1, SampleCount div ClientConcurrency)] end)

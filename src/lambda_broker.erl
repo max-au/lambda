@@ -80,7 +80,7 @@ buy(Broker, Capacity) ->
 -spec init([]) -> {ok, state()}.
 init(Scope) ->
     %% publish broker to the cluster
-    lambda_registry:register_name(Scope, self()),
+    yes = lambda_registry:register_name(Scope, self()),
     {ok, #lambda_broker_state{}}.
 
 handle_call(_Req, _From, #lambda_broker_state{}) ->

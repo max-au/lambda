@@ -23,8 +23,6 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--include_lib("proper/include/proper.hrl").
-
 suite() ->
     [{timetrap, {seconds, 10}}].
 
@@ -35,7 +33,7 @@ init_per_suite(Config) ->
     logger:set_primary_config(level, all),
     {ok, Physical} = lambda_epmd:start_link(),
     erlang:unlink(Physical),
-    {ok, Registry} = lambda_registry:start(#{}),
+    Registry = lambda_registry:start(#{}),
     [{registry, Registry}, {physical, Physical} | Config].
 
 end_per_suite(Config) ->
@@ -68,6 +66,8 @@ basic(Config) when is_list(Config) ->
         Other ->
             ?assert(false, Other)
     end.
+
+
 
 %%--------------------------------------------------------------------
 %% Property based tests

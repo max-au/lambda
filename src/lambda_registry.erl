@@ -20,8 +20,9 @@
     whereis_name/1,
     send/2,
     %% extended API - subscriptions for process registry changes
+    publish/3,
     subscribe/2,
-    unsubscribe/1
+    unsubscribe/2
 ]).
 
 -behaviour(gen_server).
@@ -49,10 +50,13 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server outside of supervision hierarchy.
-%% Useful for testing in conjunction with 'peer'.
+%% Useful for testing in conjunction with 'peer'. Unlike start_link,
+%%  throws immediately, without the need to unwrap the {ok, Pid} tuple.
+%% Does not register name locally (testing it is!)
 -spec start(points()) -> gen:start_ret().
 start(Bootstrap) ->
-    gen_server:start({local, ?MODULE}, ?MODULE, Bootstrap, []).
+    {ok, Pid} = gen_server:start(?MODULE, Bootstrap, []),
+    Pid.
 
 %% @doc
 %% Starts the server and links it to calling process.
@@ -79,7 +83,7 @@ authorities(Registry) ->
     Name :: name(),
     Pid :: pid().
 register_name(Name, Proc) ->
-    gen_server:call(?MODULE, {register_name, Name, Proc}).
+    publish(?MODULE, Name, Proc).
 
 %% @doc Unregisters locally running process that was previously
 %%  registered under Name.
@@ -112,19 +116,25 @@ send(Name, Msg) ->
 %%--------------------------------------------------------------------
 %% Extended API
 
+%% @doc Publishes Name => Proc association to Srv, triggering automatic
+%%      distribution to all subscribed processes in the cluster.
+publish(Srv, Name, Proc) ->
+    gen_server:call(Srv, {publish, Name, Proc}).
+
 %% @doc Subscribes Proc to updates from Name, returning already
 %%      known brokers serving the name.
 %%      When a list of brokers in Name changes, authorities will send
 %%      an update which will be channeled to Proc (once).
--spec subscribe(name(), pid()) -> [pid()].
-subscribe(Name, Proc) ->
-    gen_server:call(?MODULE, {subscribe, Name, Proc}).
+-spec subscribe(gen:emgr_name(), name()) -> [pid()].
+subscribe(Srv, Name) ->
+    %% Pass self() explicitly to allow tricks with proxy-ing gen_server calls
+    gen_server:call(Srv, {subscribe, Name, self()}).
 
 %% @doc Unsubscribes Proc from updates. Currently a single process
 %%  can have only one subscription (one name subscribed to).
--spec unsubscribe(pid()) -> ok | not_subscribed.
-unsubscribe(Proc) ->
-    gen_server:call(?MODULE, {unsubscribe, Proc}).
+-spec unsubscribe(gen:emgr_name(), pid()) -> ok | not_subscribed.
+unsubscribe(Srv, Proc) ->
+    gen_server:call(Srv, {unsubscribe, Proc}).
 
 %%--------------------------------------------------------------------
 %% Implementation (gen_server)
@@ -134,8 +144,11 @@ unsubscribe(Proc) ->
     self :: lambda_epmd:address(),
     %% authority processes + authority addresses to peer discovery
     authority = #{} :: #{pid() => lambda_epmd:address()},
-    %% local names, registered globally
-    registered = #{} :: #{pid() => {name(), reference()}},
+    %% local names registered globally. Bi-map. Only one broker is
+    %%  expected to be registered with a specific name.
+    published = #{} :: #{name() => pid()},
+    %% map pid to name (for monitoring)
+    local = #{} :: #{pid() => {name(), reference()}},
     %% subscriptions for global updates (bi-map would fit better)
     subscriptions = #{} :: #{name() => {pid(), reference()}}
 }).
@@ -150,22 +163,23 @@ init(Bootstrap) ->
     discover(Bootstrap, Self),
     {ok, #lambda_registry_state{self = Self}}.
 
-handle_call({publish, _Name, Proc}, _From, #lambda_registry_state{registered = Local} = State) when is_map_key(Proc, Local) ->
-    %% process can't be registered under many names
+handle_call({publish, Name, Proc}, _From, #lambda_registry_state{local = Local, published = Published} = State)
+    when is_map_key(Proc, Local), is_map_key(Name, Published) ->
+    %% process can't be registered under many names, and a name can't be taken by more than 1 process
     {reply, no, State};
-handle_call({register_name, Name, Proc}, _From, #lambda_registry_state{authority = Authority, registered = Local} = State) ->
+handle_call({publish, Name, Proc}, _From, #lambda_registry_state{authority = Authority, local = Local, published = Published} = State) ->
     MRef = erlang:monitor(process, Proc),
     %% just fan-out to all authorities, and remember the local mapping
-    broadcast(Authority, {register_name, Name, Proc}),
-    {reply, yes, State#lambda_registry_state{registered = Local#{Proc => {Name, MRef}}}};
+    broadcast(Authority, {publish, Name, Proc}),
+    {reply, yes, State#lambda_registry_state{local = Local#{Proc => {Name, MRef}}, published = Published#{Name => [Proc]}}};
 
-handle_call({unregister_name, Proc}, _From, #lambda_registry_state{authority = Authority, registered = Local} = State) ->
+handle_call({unpublish, Proc}, _From, #lambda_registry_state{authority = Authority, local = Local, published = Published} = State) ->
     case maps:take(Proc, Local) of
         {{Name, MRef}, NewLocal} ->
             %% same as if Proc is going down, but needs demonitor
             erlang:demonitor(MRef, [flush]),
-            broadcast(Authority, {unregister_name, Name, Proc}),
-            {reply, ok, State#lambda_registry_state{registered = NewLocal}};
+            broadcast(Authority, {unpublish, Name, Proc}),
+            {reply, ok, State#lambda_registry_state{local = NewLocal, published = maps:remove(Name, Published)}};
         error ->
             %% some race condition?
             {reply, ok, State}
@@ -174,10 +188,10 @@ handle_call({unregister_name, Proc}, _From, #lambda_registry_state{authority = A
 %% Advanced process registry capable of notifying when the global name registration changed.
 handle_call({subscribe, _Name, Proc}, _From, #lambda_registry_state{subscriptions = Remote} = State) when is_map_key(Proc, Remote) ->
     {reply, already_subscribed, State};
-handle_call({subscribe, Name, Proc}, _From, #lambda_registry_state{authority = Authority, subscriptions = Remote} = State) ->
+handle_call({subscribe, Name, Proc}, _From, #lambda_registry_state{authority = Authority, subscriptions = Remote, published = Published} = State) ->
     MRef = erlang:monitor(process, Proc),
     broadcast(Authority, {subscribe, Name, Proc}),
-    Brokers = [Pid || {Pid, _} <- maps:values(State#lambda_registry_state.registered)], %% TODO: actually return brokers
+    Brokers = maps:get(Name, Published, []), %% TODO: implement global sync/monitoring
     {reply, Brokers, State#lambda_registry_state{subscriptions = Remote#{Proc => {Name, MRef}}}};
 
 handle_call({unsubscribe, Proc}, _From, #lambda_registry_state{subscriptions = Remote} = State) ->

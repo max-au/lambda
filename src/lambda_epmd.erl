@@ -9,6 +9,7 @@
 %% API
 -export([
     replace/0,
+    restore/0,
     set_node/2,
     del_node/1,
     get_node/1
@@ -75,6 +76,19 @@ replace() ->
     true = code:unstick_mod(EpmdMod),
     {module, EpmdMod} = code:load_binary(EpmdMod, code:which(EpmdMod), Bin),
     Pid.
+
+%%--------------------------------------------------------------------
+%% @doc Test/debug only: restores erl_epmd previously running to revert
+%%      previous 'replace' operation
+-spec restore() -> true.
+restore() ->
+    %% if this server is running, stop it
+    is_pid(whereis(?MODULE)) andalso gen_server:stop(?MODULE),
+    %% ALERT: Code below is for recovering after hacky replace()
+    BeamFile = filename:join(code:lib_dir(kernel, ebin), "erl_epmd"),
+    {module, erl_epmd} = code:load_abs(BeamFile, erl_epmd),
+    true = code:stick_mod(erl_epmd).
+
 
 %% @doc
 %% Starts the server and links it to calling process. Required for

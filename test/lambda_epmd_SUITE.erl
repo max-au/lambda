@@ -49,7 +49,8 @@ end_per_suite(Config) ->
         Pid when is_pid(Pid) ->
             net_kernel:stop(),
             lists:delete(net_kernel, Config)
-    end.
+    end,
+    _ = lambda_epmd:restore().
 
 %%--------------------------------------------------------------------
 %% Test Cases

@@ -257,7 +257,7 @@ handle_info({update, Brokers}, #lambda_state{capacity = Cap, high = H} = State) 
 
 order(Scope, Plb, Cap) ->
     %% subscribe to broker updates
-    Brokers = lambda_registry:subscribe(Scope, self()),
+    Brokers = lambda_registry:subscribe(lambda_registry, Scope),
     %% send requests to already known brokers
     [lambda_broker:buy(Broker, Cap) || Broker <- Brokers],
     order_loop(Scope, Plb, Cap, Brokers).

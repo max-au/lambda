@@ -8,12 +8,15 @@
 -export([
     suite/0,
     all/0,
-    groups/0
+    groups/0,
+    init_per_group/2,
+    end_per_group/2
 ]).
 
 %% Test cases exports
 -export([
     basic/0, basic/1,
+    publish/0, publish/1,
     peer/0, peer/1
 ]).
 
@@ -33,7 +36,23 @@ all() ->
     [{group, local}, {group, cluster}].
 
 groups() ->
-    [{local, [basic]}, {cluster, [peer]}].
+    [{local, [basic, publish]}, {cluster, [peer]}].
+
+init_per_group(local, Config) ->
+    Addr = {epmd, "unused"}, %% use fake address for non-distributed node
+    %% start discovery
+    {ok, Disco} = lambda_epmd:start_link(),
+    ok = lambda_epmd:set_node(node(), Addr),
+    unlink(Disco),
+    [{disco, Disco} | Config];
+init_per_group(_Group, Config) ->
+    Config.
+
+end_per_group(local, Config) ->
+    gen_server:stop(?config(disco, Config)),
+    proplists:delete(disco, Config);
+end_per_group(_Group, Config) ->
+    Config.
 
 %%--------------------------------------------------------------------
 %% Convenience
@@ -105,13 +124,9 @@ basic() ->
     [{doc, "Tests authority discovery within a single Erlang node"}].
 
 basic(Config) when is_list(Config) ->
-    Addr = {epmd, "localhost"}, %% use fake address for non-distributed node
-    %% start discovery
-    {ok, Disco} = lambda_epmd:start_link(),
-    ok = lambda_epmd:set_node(node(), Addr),
     %% start root (empty) authority
     {ok, AuthPid} = lambda_authority:start_link(#{}),
-    Bootstrap = #{AuthPid => Addr},
+    Bootstrap = #{AuthPid => {epmd, "unused"}},
     %% start a number of (unnamed) registries
     Registries = [unreg(lambda_registry:start_link(Bootstrap)) || _ <- lists:seq(1, 8)],
     %% ensure all registries have processed everything. Twice.
@@ -136,8 +151,21 @@ basic(Config) when is_list(Config) ->
     Auths = lists:sort([AuthPid, Auth2]),
     [?assertEqual(Auths, lists:sort(lambda_registry:authorities(R))) || R <- Registries],
     %% all done, stop now
-    [gen:stop(Pid) || Pid <- Registries ++ [AuthPid, Disco, Auth2]].
+    [gen:stop(Pid) || Pid <- Registries ++ [AuthPid, Auth2]].
 
+
+publish() ->
+    [{doc, "Tests local process publishing and discoverable by other nodes"}].
+
+publish(Config) when is_list(Config) ->
+    %% start a registry with no authority whatsoever
+    Reg = lambda_registry:start(#{}),
+    %% publish self()
+    ?assertEqual(yes, lambda_registry:publish(Reg, ?FUNCTION_NAME, self())),
+    %% ensure subscription returns ourself
+    ?assertEqual([self()], lambda_registry:subscribe(Reg, ?FUNCTION_NAME)),
+    gen_server:stop(Reg),
+    ok.
 
 %%--------------------------------------------------------------------
 %% Real Cluster Test Cases

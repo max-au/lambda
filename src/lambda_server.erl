@@ -49,11 +49,11 @@ start_link(Name, Capacity) ->
 }).
 
 init([Scope, Capacity]) ->
-    %% monitor brokers, globally
-    Brokers = lambda_registry:subscribe(Scope, self()),
+    %% monitor brokers, globally, and consistently
+    Brokers = lambda_registry:subscribe(lambda_registry, Scope),
     BrokerMons = maps:from_list([{B, erlang:monitor(process, B)} || B <- Brokers]),
     %% publish total capacity
-    lambda_broker:sell(Brokers, Capacity),
+    [lambda_broker:sell(B, Capacity) || B <- Brokers],
     %% trap exists, as server acts as a supervisor
     process_flag(trap_exit, true),
     {ok, #lambda_server_state{scope = Scope, capacity = Capacity, brokers = BrokerMons}}.
