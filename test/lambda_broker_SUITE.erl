@@ -30,10 +30,10 @@ all() ->
     [basic, proper].
 
 init_per_suite(Config) ->
-    logger:set_primary_config(level, all),
     {ok, Physical} = lambda_epmd:start_link(),
     erlang:unlink(Physical),
-    Registry = lambda_registry:start(#{}),
+    {ok, Registry} = lambda_registry:start_link(#{}),
+    unlink(Registry),
     [{registry, Registry}, {physical, Physical} | Config].
 
 end_per_suite(Config) ->

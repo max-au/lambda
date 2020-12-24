@@ -10,8 +10,9 @@
     sync_via/2,
     start_local/0,
     end_local/0,
-    start_node/2,
-    start_nodes/1
+    start_node_link/1,
+    start_node_link/3,
+    start_nodes/2
 ]).
 
 %% Internal exports to spawn remotely
@@ -21,13 +22,16 @@
 
 %% @doc Flushes well-behaved (implementing OTP system behaviour)
 %%      process queue.
+-spec sync(sys:name() | [sys:name()]) -> ok.
 sync([Pid]) ->
-    sys:get_state(Pid);
+    sys:get_state(Pid),
+    ok;
 sync([Pid | More]) ->
     sys:get_state(Pid),
     sync(More);
 sync(Pid) when is_pid(Pid) ->
-    sys:get_state(Pid).
+    sys:get_state(Pid),
+    ok.
 
 %% @doc Flushes OTP-behaving process queue from the point of
 %%      view of another process. Needed to avoid race condition
@@ -36,72 +40,50 @@ sync(Pid) when is_pid(Pid) ->
 %%      This function exercises Erlang guarantees of message delivery
 %%      done in the same order as messages are sent (and therefore
 %%      will break is messages don't arrive in this order)
+-spec sync_via(sys:name(), sys:name()) -> ok.
 sync_via(Pid, Pid) ->
     error(cycle);
 sync_via(Via, Pid) ->
-    sys:replace_state(Via, fun (S) -> sys:get_state(Pid), S end).
+    sys:replace_state(Via, fun (S) -> sys:get_state(Pid), S end),
+    ok.
 
-%% @doc Start lambda application locally (in this BEAM). Authority is local,
-%%      epmd replaced.
+%% @doc Start lambda application locally (in this VM). Authority is local,
+%%      epmd replaced. Node is made distributed
+-spec start_local() -> ok.
 start_local() ->
     _Physical = lambda_epmd:replace(),
     %% need to be alive
-    Config1 =
-        case erlang:is_alive() of
-            true ->
-                Config;
-            false ->
-                LongShort = case inet_db:res_option(domain) of
-                                [] -> shortnames;
-                                Domain when is_list(Domain) -> longnames
-                            end,
-                {ok, Pid} = net_kernel:start([master, LongShort]),
-                [{net_kernel, Pid} | Config]
-        end,
-    %% start a number of processes linked, in a separate process that survives the entire test suite
-    Saviour = proc_lib:start(?MODULE, saviour, []),
-    [{level, maps:get(level, logger:get_primary_config())}, {saviour, Saviour}  | Config1].
-    % logger:set_primary_config(level, all)
+    erlang:is_alive() orelse net_kernel:start([?MODULE]),
+    %% configuration: local authority
+    ok = application:load(lambda),
+    %% "self-signed": node runs both authority and registry
+    ok = application:set_env(lambda, authority, true),
+    ok = application:set_env(lambda, bootstrap, #{{lambda_authority, node()} => lambda_epmd:get_node(node())}),
+    %% lambda application. it does not have any dependencies, so should "just start".
+    %% Note: this is deliberate decision, don't just change to "ensure_all_started".
+    ok = application:start(lambda).
 
+%% @doc Ends locally running lambda, restores epmd, unloads lambda app,
+%%      makes node non-distributed if it was allegedly started by us.
+-spec end_local() -> ok.
 end_local() ->
-    {ok, Saviour} = proplists:get_value(saviour, Config),
-    try
-        MRef = erlang:monitor(process, Saviour),
-        Saviour ! stop,
-        receive
-            {'DOWN', MRef, process, Saviour, _} ->
-                ok
-        end
-    catch
-        error:badarg ->
-            ok
-    end,
-    Config1 = proplists:delete(saviour, Config),
-    Config2 =
-        case proplists:get_value(net_kernel, Config) of
-            undefined ->
-                Config1;
-            Pid when is_pid(Pid) ->
-                net_kernel:stop(),
-                proplists:delete(net_kernel, Config1)
-        end,
-    lambda_epmd:restore(),
-    logger:set_primary_config(level, ?config(level, Config2)),
-    proplists:delete(level, Config2).
+    ok = application:stop(lambda),
+    ok = application:unload(lambda),
+    hd(string:lexemes(atom_to_list(node()), "@")) =:= ?MODULE_STRING andalso net_kernel:stop(),
+    true = lambda_epmd:restore(),
+    ok.
 
-o() ->
-    Addr = {epmd, "unused"}, %% use fake address for non-distributed node
-    %% start discovery
-    {ok, Disco} = lambda_epmd:start_link(),
-    ok = lambda_epmd:set_node(node(), Addr),
-    unlink(Disco),
-    [{disco, Disco} | Config].
+%% @doc Starts an extra node with specified bootstrap, no authority and default command line.
+-spec start_node_link(lambda_registry:points()) -> {peer:dest(), node()}.
+start_node_link(Bootstrap) ->
+    start_node_link(Bootstrap, [], false).
 
-%% @doc Starts an extra node with specified bootstrap.
-%%      Extra node may run authority if requested.
-start_node(Bootstrap, Authority) ->
+%% @doc Starts an extra node with specified bootstrap, authority setting, and additional
+%%      arguments in the command line.
+-spec start_node_link(lambda_registry:points(), CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
+start_node_link(Bootstrap, CmdLine, Authority) ->
     Node = peer:random_name(),
-    CP = filename:dirname(code:which(lambda_registry)),
+    CP = code:lib_dir(lambda, ebin),
     TestCP = filename:dirname(code:which(?MODULE)),
     Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
     {ok, Peer} = peer:start_link(#{node => Node, connection => standard_io,
@@ -111,7 +93,7 @@ start_node(Bootstrap, Authority) ->
             "-epmd_module", "lambda_epmd",
             %"-kernel", "logger", "[{handler, default, logger_std_h,#{config => #{type => standard_error}, formatter => {logger_formatter, #{ }}}}]",
             %"-kernel", "logger_level", "all",
-            "-pa", CP, "-pa", TestCP] ++ Auth}),
+            "-pa", CP, "-pa", TestCP] ++ Auth ++ CmdLine}),
     Bootstrap =/= #{} andalso
         peer:apply(Peer, application, set_env, [lambda, bootstrap, Bootstrap, [{persistent, true}]]),
     {ok, _Apps} = peer:apply(Peer, application, ensure_all_started, [lambda]),
@@ -120,14 +102,19 @@ start_node(Bootstrap, Authority) ->
             {_, BootNodes} = lists:unzip(maps:keys(Bootstrap)),
             ok = peer:apply(Peer, ?MODULE, wait_connection, [BootNodes])
         end,
-    unlink(Peer),
     {Peer, Node}.
 
-%% @doc Starts multiple lambda nodes concurrently
+%% @doc Starts multiple lambda non-authority nodes concurrently.
+-spec start_nodes(lambda_registry:points(), pos_integer()) -> [{peer:dest(), node()}].
+start_nodes(Bootstrap, Count) ->
+    lambda_async:pmap([
+        fun () -> {Peer, Node} = start_node_link(Bootstrap, [], false), unlink(Peer), {Peer, Node} end
+        || _ <- lists:seq(1, Count)]).
 
 %% @private
 %% executed in the remote node: waits until registry finds some
 %%  authority
+-spec wait_connection([node()]) -> ok.
 wait_connection(Nodes) ->
     net_kernel:monitor_nodes(true),
     wait_nodes(Nodes),

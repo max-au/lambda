@@ -31,11 +31,6 @@
     exit/1
 ]).
 
-%% Internal exports
--export([
-    saviour/0
-]).
-
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
@@ -46,10 +41,12 @@ all() ->
     [lb, fail_capacity_wait, call_fail, packet_loss].
 
 init_per_suite(Config) ->
-    lambda_test:start_local().
+    ok = lambda_test:start_local(),
+    Config.
 
 end_per_suite(Config) ->
-    lambda_test:end_local().
+    ok = lambda_test:end_local(),
+    Config.
 
 init_per_testcase(throughput, Config) ->
     {ok, Lb} = lambda_plb:start_link(?MODULE, #{low => 0, high => 10000000}),
@@ -92,24 +89,6 @@ sleep(Time) ->
 %%--------------------------------------------------------------------
 %% convenience primitives
 
-saviour() ->
-    {ok, Authority} = lambda_authority:start_link(#{}),
-    {ok, Registry} = lambda_registry:start_link(#{}),
-    {ok, Broker} = lambda_broker:start_link(?MODULE),
-    proc_lib:init_ack({ok, self()}),
-    receive
-        stop ->
-            gen:stop(Broker),
-            gen:stop(Registry),
-            gen:stop(Authority)
-    end.
-
-flush(Pid) ->
-    sys:get_state(Pid).
-
-flush_via(Via, Pid) ->
-    sys:replace_state(Via, fun(State) -> flush(Pid), State end).
-
 multi_echo(0) ->
     ok;
 multi_echo(Count) ->
@@ -117,21 +96,11 @@ multi_echo(Count) ->
     multi_echo(Count - 1).
 
 make_node(Args, Capacity) ->
-    %% technically it would be better to make a release of "lambda"
-    %%  and start it with corresponding vm.args and sys.config. But this
-    %%  will make tests slightly more tangled than needed, so simulate
-    %%  release locally
-    Node = peer:random_name(),
-    CP = filename:dirname(code:which(?MODULE)),
-    {ok, Peer} = peer:start_link(#{node => Node,
-        args => ["-epmd_module", "lambda_epmd", "-start_epmd", "false", "-pa", CP] ++ Args,
-        connection => standard_io, wait_boot => 5000}),
-    %% start lambda application
-    SelfBoot = #{{lambda_authority, node()} => lambda_epmd:get_node(node())},
-    ok = peer:apply(Peer, application, set_env, [lambda, bootstrap, SelfBoot, [{persistent, true}]]),
-    {ok, _Apps} = peer:apply(Peer, application, ensure_all_started, [lambda]),
+    {ok, Bootstrap} = application:get_env(lambda, bootstrap),
+    {Peer, Node} = lambda_test:start_node_link(Bootstrap, Args, false),
     %% Peer will connect back to us at some point later, courtesy of lambda_registry and authority
     {ok, Worker} = peer:apply(Peer, lambda_server, start, [?MODULE, Capacity]),
+    unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
     {Node, Peer, Worker, Capacity}.
 
 wait_complete(Procs) when is_list(Procs) ->
@@ -159,7 +128,8 @@ lb(Config) when is_list(Config) ->
     ClientConcurrency = 100,
     ?assertEqual(0, SampleCount rem ClientConcurrency),
     %% start worker nodes, when every next node has +1 more capacity
-    Peers = [make_node(["+S", integer_to_list(Seq)], Seq) || Seq <- lists:seq(1, WorkerCount)],
+    Peers = lambda_async:pmap([{fun make_node/2, [["+S", integer_to_list(Seq)], Seq]}
+        || Seq <- lists:seq(1, WorkerCount)]),
     %% wait for capacity from all 4 nodes
     Lb = ?config(lb, Config),
     ?assertEqual(lists:sum(lists:seq(1, WorkerCount)), lambda_plb:capacity(Lb)),
@@ -240,8 +210,8 @@ packet_loss(Config) when is_list(Config) ->
     {ok, Worker} = lambda_server:start_link(?MODULE, Concurrency),
     %% sync broker + plb to ensure it received demand
     Lb = ?config(lb, Config),
-    flush_via(Worker, ?config(broker, Config)), %% this flushes broker (order sent to plb)
-    flush_via(Lb, Worker), %% this flushes plb and worker via plb
+    lambda_test:sync_via(Worker, ?config(broker, Config)), %% this flushes broker (order sent to plb)
+    lambda_test:sync_via(Lb, Worker), %% this flushes plb and worker via plb
     ?assertEqual(Concurrency, lambda_plb:capacity(Lb)),
     %% waste all tokens, using white-box testing
     [Lb ! {'$gen_call', {self(), erlang:make_ref()}, token} || _ <- lists:seq(1, Concurrency)],
@@ -275,8 +245,8 @@ measure(Lb, Broker, CapPerNode, Nodes) ->
     Workers = [begin {ok, W} = rpc:call(Node, lambda_server, start, [?MODULE, CapPerNode]), W end
         || _ <- lists:seq(1, Nodes - 1)],
     %% ensure expected capacity achieved
-    [flush_via(W, Broker) || W <- [Worker | Workers]],
-    [flush_via(Lb, W) || W <- [Worker | Workers]],
+    [lambda_test:sync_via(W, Broker) || W <- [Worker | Workers]],
+    [lambda_test:sync_via(Lb, W) || W <- [Worker | Workers]],
     ?assertEqual(CapPerNode * Nodes, lambda_plb:capacity(Lb)),
     %% dispatch predefined amount of calls with some concurrency enabled
     [timed(Callers, CallsPerCaller, CapPerNode, Nodes)
@@ -285,9 +255,9 @@ measure(Lb, Broker, CapPerNode, Nodes) ->
     net_kernel:disconnect(Node),
     peer:stop(Peer),
     %% flush broker
-    flush_via(Broker, pg),
-    flush_via(Lb, Broker),
-    flush_via(Broker, Lb),
+    lambda_test:sync_via(Broker, pg),
+    lambda_test:sync_via(Lb, Broker),
+    lambda_test:sync_via(Broker, Lb),
     %% ensure no capacity left in plb
     ?assertEqual(0, lambda_plb:capacity(Lb)),
     ok.

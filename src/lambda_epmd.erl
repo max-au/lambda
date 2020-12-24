@@ -75,6 +75,7 @@ replace() ->
     {ok, EpmdMod, Bin} = compile:forms(Replaced),
     true = code:unstick_mod(EpmdMod),
     {module, EpmdMod} = code:load_binary(EpmdMod, code:which(EpmdMod), Bin),
+    false = code:purge(EpmdMod),
     Pid.
 
 %%--------------------------------------------------------------------

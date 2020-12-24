@@ -73,7 +73,7 @@ handle_info({'EXIT', Pid, _Reason}, #lambda_server_state{capacity = Capacity, co
     ?LOG_DEBUG("Client ~p disconnected", [Pid]),
     {Cap, NewConns} = maps:take(Pid, Conns),
     NewCap = Capacity + Cap,
-    lambda_broker:sell(maps:keys(Brokers), NewCap),
+    [lambda_broker:sell(B, NewCap) || B <- maps:keys(Brokers)],
     {noreply, State#lambda_server_state{capacity = NewCap, conns = NewConns}};
 
 handle_info({connect, To, Cap}, #lambda_server_state{conns = Conns, capacity = Capacity, brokers = Brokers} = State) ->
@@ -83,7 +83,7 @@ handle_info({connect, To, Cap}, #lambda_server_state{conns = Conns, capacity = C
     {ok, Conn} = proc_lib:start_link(?MODULE, server, [To, Allowed]),
     %% publish capacity update to all brokers
     NewCap = Capacity - Cap,
-    lambda_broker:sell(maps:keys(Brokers), NewCap),
+    [lambda_broker:sell(B, NewCap) || B <- maps:keys(Brokers)],
     {noreply, State#lambda_server_state{capacity = NewCap, conns = Conns#{Conn => Cap}}}.
 
 %%--------------------------------------------------------------------

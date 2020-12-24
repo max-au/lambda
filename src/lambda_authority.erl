@@ -96,6 +96,16 @@ handle_call(registries, _From, #lambda_authority_state{registries = Regs} = Stat
 handle_cast(_Cast, _State) ->
     error(badarg).
 
+%% Registry publishing a Name globally
+handle_info({publish, _Name, _Pid}, #lambda_authority_state{} = State) ->
+    %% TODO: implement
+    {noreply, State};
+
+%% Subscribes to Name changes globally
+handle_info({subscribe, _Name, _Pid}, #lambda_authority_state{} = State) ->
+    %% TODO: implement
+    {noreply, State};
+
 %% authority discovered by another Authority
 handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, registries = Regs} = State) ->
     _MRef = monitor(process, Peer),

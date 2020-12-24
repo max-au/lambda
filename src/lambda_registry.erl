@@ -210,6 +210,11 @@ handle_call(authorities, _From, #lambda_registry_state{authority = Auth} = State
 handle_cast(_Cast, _State) ->
     error(badarg).
 
+handle_info({authority, NewAuth, _AuthAddr, _MoreAuth}, #lambda_registry_state{authority = Auth} = State)
+    when is_map_key(NewAuth, Auth) ->
+    io:format(standard_error, "Seems like duplicate authority request, from ~p (brings ~p and ~200p)~n", [NewAuth, _AuthAddr, _MoreAuth]),
+    {noreply, State};
+
 %% authority discovered
 handle_info({authority, NewAuth, AuthAddr, MoreAuth}, #lambda_registry_state{self = Self, authority = Auth} = State)
     when not is_map_key(NewAuth, Auth) ->
@@ -246,5 +251,5 @@ discover(Points, Self) ->
             Location ! {discover, self(), Self}
         end, Points).
 
-broadcast(Authority, Scopes) ->
-    [Auth ! {publish, Scopes} || Auth <- maps:keys(Authority)].
+broadcast(Authority, Msg) ->
+    [Auth ! Msg || Auth <- maps:keys(Authority)].
