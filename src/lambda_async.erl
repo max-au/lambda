@@ -22,6 +22,8 @@
 -type async_fun() :: {module(), atom(), Args :: [term()]} | function() | {function(), [term()]}.
 
 %% @doc Parallel map: executes al Funs concurrently, waits infinitely for result.
+%%      Spawns additional process even if only one Fun is passed. This protects
+%%      the caller from unintentional garbage left in process dictionary.
 -spec pmap([async_fun()]) -> [term()].
 pmap(Funs) ->
     pmap(Funs, infinity).

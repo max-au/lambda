@@ -52,13 +52,13 @@
 %% Useful for testing in conjunction with 'peer'.
 -spec start(points()) -> gen:start_ret().
 start(Bootstrap) ->
-    gen_server:start(?MODULE, Bootstrap, []).
+    gen_server:start({local, ?MODULE}, ?MODULE, Bootstrap, []).
 
 %% @doc
 %% Starts the server and links it to calling process.
 -spec start_link(points()) -> gen:start_ret().
 start_link(Bootstrap) ->
-    gen_server:start_link(?MODULE, Bootstrap, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Bootstrap, []).
 
 %% @doc returns list of authorities known to this registry
 -spec authorities(gen:emgr_name()) -> [pid()].
@@ -225,6 +225,7 @@ handle_info({discover, Peer, _Port}, #lambda_registry_state{authority = Authorit
 discover(Points, Self) ->
     maps:map(
         fun (Location, Addr) ->
+            ?LOG_DEBUG("~s discovering ~p of ~p", [node(), Location, Addr]),
             lambda_epmd:set_node(Location, Addr),
             Location ! {discover, self(), Self}
         end, Points).
