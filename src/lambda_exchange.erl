@@ -85,7 +85,7 @@ buy(Exchange, Id, Capacity) ->
     buy = [] :: [buy_order()]
 }).
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: exchange " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -126,7 +126,7 @@ handle_info({sell, SellerContact, Id, Quantity, Broker}, #lambda_exchange_state{
                 ?dbg("sell capacity update from ~p for ~b (id ~b)", [Broker, Quantity, Id]),
                 {Quantity, MRef, Seller, Contact};
             error ->
-                ?dbg("got sell order from ~p for ~b (id ~b)", [Broker, Quantity, Id]),
+                ?dbg("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, Id, SellerContact]),
                 MRef = erlang:monitor(process, Broker),
                 {Quantity, MRef, SellerContact}
         end,

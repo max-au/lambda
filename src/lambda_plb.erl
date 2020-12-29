@@ -163,9 +163,9 @@ capacity(Module) ->
 
 -type state() :: #lambda_plb_state{}.
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt, [node(), self() | Arg])).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
 -define (dbg(Fmt, Arg), ok).
 -endif.

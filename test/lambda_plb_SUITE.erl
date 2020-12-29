@@ -122,7 +122,7 @@ lb() ->
     [{doc, "Tests weighted load balancer"}].
 
 lb(Config) when is_list(Config) ->
-    WorkerCount = 2,
+    WorkerCount = 4,
     SampleCount = 1000,
     Precision = 3,
     ClientConcurrency = 100,

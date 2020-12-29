@@ -121,7 +121,7 @@ cancel(Srv, Proc) ->
 
 -type state() :: #lambda_broker_state{}.
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -158,7 +158,7 @@ handle_call({Type, Module, Trader, Quantity}, _From, #lambda_broker_state{self =
                 [{Id, Type, Trader, Quantity, []} | Existing];
             {ok, Exch} when Type =:= sell ->
                 %% already subscribed, send orders to known exchanges
-                [lambda_exchange:sell(Ex, {self(), Self}, Id, Quantity) || Ex <- Exch],
+                [lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity) || Ex <- Exch],
                 [{Id, Type, Trader, Quantity, []} | Existing];
             error ->
                 %% not subscribed to any exchanges yet
@@ -249,7 +249,7 @@ handle_info({discover, Peer, _Port}, #lambda_broker_state{authority = Authority}
 discover(Points, Self) ->
     maps:map(
         fun (Location, Addr) ->
-            ?LOG_DEBUG("~s discovering ~p of ~p", [node(), Location, Addr]),
+            ?dbg("~s discovering ~p of ~p", [node(), Location, Addr]),
             lambda_epmd:set_node(Location, Addr),
             Location ! {discover, self(), Self}
         end, Points).
@@ -274,7 +274,7 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
                     State#lambda_broker_state{orders = maps:remove(Module, Orders), monitors = NewMonitors};
                 Outstanding ->
                     %% other orders are still in
-                    NewOut = lists:keydelete(Pid, 2, Outstanding),
+                    NewOut = lists:keydelete(Pid, 3, Outstanding),
                     State#lambda_broker_state{orders = Orders#{Module => {Exchanges, NewOut}}, monitors = NewMonitors}
             end
     end.
@@ -290,19 +290,19 @@ notify_buyer(Buyer, Quantity, [], Previous, Servers) ->
     ?dbg("buyer ~p notification: ~200p", [Buyer, Servers]),
     connect_sellers(Buyer, Servers),
     {Quantity, Previous};
-notify_buyer(Buyer, Quantity, [{Sale, Seller} | Remaining], Previous, Servers) ->
+notify_buyer(Buyer, Quantity, [{Seller, QSell} | Remaining], Previous, Servers) ->
     %% filter and discard duplicates
     case lists:member(Seller, Previous) of
         true ->
             notify_buyer(Buyer, Quantity, Remaining, Previous, Servers);
-        false when Quantity =< Sale ->
+        false when Quantity =< QSell ->
             %% complete, in total
-            ?dbg("buyer ~p complete notification: ~200p", [Buyer, [{Sale, Seller} | Servers]]),
-            connect_sellers(Buyer, [{Sale, Seller} | Servers]),
+            ?dbg("buyer ~p complete (~b) notification: ~200p", [Buyer, Quantity, [{Seller, QSell} | Servers]]),
+            connect_sellers(Buyer, [{Seller, QSell} | Servers]),
             done;
         false ->
             %% not yet complete, but maybe more servers are there?
-            notify_buyer(Buyer, Quantity - Sale, Remaining, [Seller | Previous], [{Sale, Seller} | Servers])
+            notify_buyer(Buyer, Quantity - QSell, Remaining, [Seller | Previous], [{Seller, QSell} | Servers])
     end.
 
 connect_sellers(_Buyer, []) ->

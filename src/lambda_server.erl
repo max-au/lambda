@@ -55,7 +55,7 @@ start_link(Module, Capacity) ->
     broker :: pid()
 }).
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: server " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
