@@ -44,7 +44,7 @@ sync(Pid) when is_pid(Pid) ->
 sync_via(Pid, Pid) ->
     error(cycle);
 sync_via(Via, Pid) ->
-    sys:replace_state(Via, fun (S) -> sys:get_state(Pid), S end),
+    sys:replace_state(Via, fun (S) -> (catch sys:get_state(Pid)), S end),
     ok.
 
 %% @doc Start lambda application locally (in this VM). Authority is local,
@@ -56,7 +56,7 @@ start_local() ->
     erlang:is_alive() orelse net_kernel:start([?MODULE]),
     %% configuration: local authority
     ok = application:load(lambda),
-    %% "self-signed": node runs both authority and registry
+    %% "self-signed": node runs both authority and a broker
     ok = application:set_env(lambda, authority, true),
     ok = application:set_env(lambda, bootstrap, #{{lambda_authority, node()} => lambda_epmd:get_node(node())}),
     %% lambda application. it does not have any dependencies, so should "just start".
@@ -74,13 +74,13 @@ end_local() ->
     ok.
 
 %% @doc Starts an extra node with specified bootstrap, no authority and default command line.
--spec start_node_link(lambda_registry:points()) -> {peer:dest(), node()}.
+-spec start_node_link(lambda_broker:points()) -> {peer:dest(), node()}.
 start_node_link(Bootstrap) ->
     start_node_link(Bootstrap, [], false).
 
 %% @doc Starts an extra node with specified bootstrap, authority setting, and additional
 %%      arguments in the command line.
--spec start_node_link(lambda_registry:points(), CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
+-spec start_node_link(lambda_broker:points(), CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
 start_node_link(Bootstrap, CmdLine, Authority) ->
     Node = peer:random_name(),
     CP = code:lib_dir(lambda, ebin),
@@ -105,14 +105,14 @@ start_node_link(Bootstrap, CmdLine, Authority) ->
     {Peer, Node}.
 
 %% @doc Starts multiple lambda non-authority nodes concurrently.
--spec start_nodes(lambda_registry:points(), pos_integer()) -> [{peer:dest(), node()}].
+-spec start_nodes(lambda_broker:points(), pos_integer()) -> [{peer:dest(), node()}].
 start_nodes(Bootstrap, Count) ->
     lambda_async:pmap([
         fun () -> {Peer, Node} = start_node_link(Bootstrap, [], false), unlink(Peer), {Peer, Node} end
         || _ <- lists:seq(1, Count)]).
 
 %% @private
-%% executed in the remote node: waits until registry finds some
+%% executed in the remote node: waits until broker finds some
 %%  authority
 -spec wait_connection([node()]) -> ok.
 wait_connection(Nodes) ->

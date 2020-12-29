@@ -5,7 +5,8 @@
 %%  backpressure: when a node did not provide credit, no
 %%  call/cast to that node is allowed.
 %%
-%%  Capacity discovery is done with lambda_broker interface.
+%%  Capacity discovery: plb subscribes to module via local
+%%  broker, and issues "buy" order when needed.
 %%
 %% @end
 -module(lambda_plb).
@@ -38,12 +39,14 @@
     take/2
 ]).
 
-%% Options for this scope.
--type scope_options() :: #{
+%% Options for this plb (module).
+-type options() :: #{
     %% capacity to request from all servers combined
     high := non_neg_integer(),
     %% level at which the client is no longer healthy
-    low := pos_integer()
+    low := pos_integer(),
+    %% local broker process (lambda_broker by default)
+    broker => gen:emgr_name()
 }.
 
 -include_lib("kernel/include/logger.hrl").
@@ -55,24 +58,24 @@
 %% Uses default watermark settings, which is 1 for low watermark, and
 %%  1000 for high.
 -spec start(module()) -> gen:start_ret().
-start(Scope) when is_atom(Scope) ->
-    start(Scope, #{low => 10, high => 1000}).
+start(Module) when is_atom(Module) ->
+    start(Module, #{low => 10, high => 1000}).
 
--spec start(module(), scope_options()) -> gen:start_ret().
-start(Scope, Options) ->
-    gen_server:start({local, Scope}, ?MODULE, {Scope, Options}, []).
+-spec start(module(), options()) -> gen:start_ret().
+start(Module, Options) ->
+    gen_server:start({local, Module}, ?MODULE, {Module, Options}, []).
 
 %% @doc
 %% Starts the server and links it to calling process.
 -spec start_link(module()) -> gen:start_ret().
-start_link(Scope) when is_atom(Scope) ->
-    start_link(Scope, #{low => 10, high => 1000}).
+start_link(Module) when is_atom(Module) ->
+    start_link(Module, #{low => 10, high => 1000}).
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(module(), scope_options()) -> gen:start_ret().
-start_link(Scope, Options) when is_atom(Scope) ->
-    gen_server:start_link({local, Scope}, ?MODULE, {Scope, Options}, []).
+-spec start_link(module(), options()) -> gen:start_ret().
+start_link(Module, Options) when is_atom(Module) ->
+    gen_server:start_link({local, Module}, ?MODULE, {Module, Options}, []).
 
 %%--------------------------------------------------------------------
 %% API
@@ -109,8 +112,8 @@ call(M, F, A, Timeout) ->
 
 %% @doc Returns current capacity.
 -spec capacity(module()) -> non_neg_integer().
-capacity(Scope) ->
-    gen_server:call(Scope, capacity).
+capacity(Module) ->
+    gen_server:call(Module, capacity).
 
 %%--------------------------------------------------------------------
 %% Weighted random sampling: each server process has a weight.
@@ -127,17 +130,17 @@ capacity(Scope) ->
 %%  can be done with augmented binary tree, analogous to gb_tree,
 %%  but with added left/right capacity.
 
--record(lambda_state, {
-    %% remember scope name for event handler
-    scope :: module(),
+-record(lambda_plb_state, {
+    %% remember module name for event handler
+    module :: module(),
     %% current capacity, needed for quick reject logic
     capacity = 0 :: non_neg_integer(),
     %% high/low capacity watermarks, when capacity
     %%  falls below or raises above specified number,
     %%  an event is emitted (currently gen_event named 'lambda_events')
     %% When capacity falls below low_watermark,
-    %%  {low_watermark, Scope, Capacity} is emitted.
-    %% When capacity rises above, {high_watermark, Scope, Capacity}
+    %%  {low_watermark, Module, Capacity} is emitted.
+    %% When capacity rises above, {high_watermark, Module, Capacity}
     low :: non_neg_integer(),
     high :: pos_integer(),
     %% connected servers, maps pid to an index & expected capacity
@@ -154,34 +157,47 @@ capacity(Scope) ->
     free = [0] :: [non_neg_integer()],
     %% queue: process that accepts 'wait' requests
     queue :: pid(),
-    %% outstanding broker order, when capacity falls below "low",
-    %%  and has not recovered above "high"
-    order :: pid()
+    %% local broker, monitored for failover purposes
+    broker :: pid()
 }).
 
--type state() :: #lambda_state{}.
+-type state() :: #lambda_plb_state{}.
 
--spec init({Scope :: atom(), Options :: scope_options()}) -> {ok, state()}.
-init({Scope, #{low := LW, high := HW}}) ->
+-define(DEBUG, true).
+-ifdef (DEBUG).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt, [node(), self() | Arg])).
+-else.
+-define (dbg(Fmt, Arg), ok).
+-endif.
+
+-spec init({Module :: atom(), Options :: options()}) -> {ok, state()}.
+init({Module, #{low := LW, high := HW} = Options}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
-    Self = self(),
-    {ok, #lambda_state{scope = Scope,
+    Broker = case maps:get(broker, Options, lambda_broker) of
+                 Pid when is_pid(Pid) -> Pid;
+                 Name when is_atom(Name) -> whereis(Name)
+             end,
+    %% monitor the broker (and reconnect if it restarts)
+    erlang:monitor(process, Broker),
+    %% not planning to cancel the order
+    _ = lambda_broker:buy(Broker, Module, HW),
+    {ok, #lambda_plb_state{module = Module,
         queue = proc_lib:spawn_link(fun queue/0),
-        order = proc_lib:spawn_link(fun () -> order(Scope, Self, HW) end),
+        broker = Broker,
         low = LW, high = HW}}.
 
-handle_call(token, _From, #lambda_state{capacity = 0, queue = Queue} = State) ->
+handle_call(token, _From, #lambda_plb_state{capacity = 0, queue = Queue} = State) ->
     % ?LOG_DEBUG("~p: no capacity: sending to queue ~p", [_From, Queue]),
     {reply, {suspend, Queue}, State};
-handle_call(token, _From, #lambda_state{capacity = Cap, index_to_pid = Itp} = State) ->
+handle_call(token, _From, #lambda_plb_state{capacity = Cap, index_to_pid = Itp} = State) ->
     Idx = take(rand:uniform(Cap) - 1, tuple_size(Itp)),
     To = element(Idx + 1, Itp),
-    Cap =:= 1 andalso begin State#lambda_state.queue ! block end,
+    Cap =:= 1 andalso begin State#lambda_plb_state.queue ! block end,
     % ?LOG_DEBUG("~p: giving token ~p", [_From, To]),
-    {reply, To, State#lambda_state{capacity = Cap - 1}};
+    {reply, To, State#lambda_plb_state{capacity = Cap - 1}};
 
-handle_call(capacity, _From, #lambda_state{capacity = Cap} = State) ->
+handle_call(capacity, _From, #lambda_plb_state{capacity = Cap} = State) ->
     {reply, Cap, State}.
 
 handle_cast(_Cast, _State) ->
@@ -189,23 +205,23 @@ handle_cast(_Cast, _State) ->
 
 %% Handles demand from the server.
 %%  If it's the first time demand, start monitoring this server.
-handle_info({demand, Demand, Server}, #lambda_state{pid_to_index = Pti, index_to_pid = Itp,
+handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, index_to_pid = Itp,
     capacity = Cap} = State) ->
     %%
     ServerCount = tuple_size(Itp),
     %%
-    % ?LOG_DEBUG("~p: received demand (~b) from ~p", [State#lambda_state.scope, Demand, Server]),
+    % ?LOG_DEBUG("~p: received demand (~b) from ~p", [State#lambda_state.module, Demand, Server]),
     %% unblock the queue
-    Cap =:= 0 andalso begin State#lambda_state.queue ! unblock end,
+    Cap =:= 0 andalso begin State#lambda_plb_state.queue ! unblock end,
     %%
     case maps:find(Server, Pti) of
         {ok, {Index, _OldDemand}} ->
             %% TODO: when old and new demands are different, start capacity search
             inc(Index, Demand, ServerCount),
-            {noreply, State#lambda_state{capacity = Cap + Demand}};
+            {noreply, State#lambda_plb_state{capacity = Cap + Demand}};
         error ->
             erlang:monitor(process, Server),
-            case State#lambda_state.free of
+            case State#lambda_plb_state.free of
                 [Free] ->
                     %% reached maximum size: double the array size
                     Extend = ServerCount * 2,
@@ -220,58 +236,36 @@ handle_info({demand, Demand, Server}, #lambda_state{pid_to_index = Pti, index_to
                     NewItp = list_to_tuple(tuple_to_list(setelement(Free + 1, Itp, Server)) ++ NewFree),
                     %% Now simply update new index in the double size array
                     inc(Free, Demand, Extend),
-                    {noreply, State#lambda_state{free = NewFree,
+                    {noreply, State#lambda_plb_state{free = NewFree,
                         index_to_pid = NewItp,
                         pid_to_index = Pti#{Server => {Free, Demand}}, capacity = Cap + Demand}};
                 [Free | More] ->
                     inc(Free, Demand, ServerCount),
-                    {noreply, State#lambda_state{free = More,
+                    {noreply, State#lambda_plb_state{free = More,
                         index_to_pid = setelement(Free + 1, Itp, Server),
                         pid_to_index = Pti#{Server => {Free, Demand}}, capacity = Cap + Demand}}
             end
     end;
 
-handle_info({order, Servers}, #lambda_state{} = State) ->
+handle_info({order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
+    ?dbg("plb servers: ~200p", [Servers]),
     Self = self(),
     [erlang:send(Pid, {connect, Self, Cap}, [noconnect, nosuspend]) || {Pid, Cap} <- Servers],
     {noreply, State};
 
-handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_state{pid_to_index = Pti, free = Free, capacity = Cap} = State) ->
+handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_plb_state{pid_to_index = Pti, free = Free, capacity = Cap} = State) ->
     %% server process died
     {{Index, _SrvCap}, NewPti} = maps:take(Pid, Pti),
     Removed = read(Index),
-    inc(Index, -Removed, tuple_size(State#lambda_state.index_to_pid)),
+    inc(Index, -Removed, tuple_size(State#lambda_plb_state.index_to_pid)),
     %% block the queue if no capacity left
-    Cap =:= Removed andalso begin State#lambda_state.queue ! block end,
+    Cap =:= Removed andalso begin State#lambda_plb_state.queue ! block end,
     %% setelement(Index, State#lambda_state.index_to_pid, undefined), %% not necessary, helps debugging
-    {noreply, State#lambda_state{free = [Index | Free], capacity = Cap - Removed, pid_to_index = NewPti}};
-
-handle_info({update, Brokers}, #lambda_state{capacity = Cap, high = H} = State) ->
-    %% brokers list changed, if we have capacity below High watermark, get some
-    Cap < H andalso lambda_broker:buy(Brokers, Cap),
-    {noreply, State}.
+    {noreply, State#lambda_plb_state{free = [Index | Free], capacity = Cap - Removed, pid_to_index = NewPti}}.
 
 %%--------------------------------------------------------------------
 %% Internal implementation
-
-order(Scope, Plb, Cap) ->
-    %% subscribe to broker updates
-    Brokers = lambda_registry:subscribe(lambda_registry, Scope),
-    %% send requests to already known brokers
-    [lambda_broker:buy(Broker, Cap) || Broker <- Brokers],
-    order_loop(Scope, Plb, Cap, Brokers).
-
-order_loop(Scope, Plb, Cap, Brokers) ->
-    receive
-        {update, NewBrokers} ->
-            New = NewBrokers -- Brokers,
-            [lambda_broker:buy(Broker, Cap) || Broker <- New],
-            order_loop(Scope, Plb, Cap, NewBrokers);
-        stop ->
-            %% lambda has enough capacity
-            ok
-    end.
 
 %% Blocking queue: processes are waiting until capacity is available.
 queue() ->

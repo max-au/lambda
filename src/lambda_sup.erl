@@ -1,7 +1,7 @@
 %% @doc
 %%  Lambd: top-level supervisor.
 %%  May start authority, if requested,
-%%      and always starts registry.
+%%      and always starts a broker.
 %% @end
 -module(lambda_sup).
 -author("maximfca@gmail.com").
@@ -21,7 +21,6 @@ init([]) ->
     %% allow 2 restarts every 10 seconds
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
     {ok, App} = application:get_application(),
-    %% Bootstrap (both authority and registry)
     %% Bootstrap format is a map of {registered_name, node} => epmd_address.
     Bootstrap = application:get_env(App, bootstrap, #{}),
     %% Authority: start if configured
@@ -36,13 +35,12 @@ init([]) ->
                     false ->
                         []
                 end,
-    %% Registry starts independently from authority. The same
-    %%  node can have both running.
-    RegistrySpecs = [
+    %% Broker is always started (TODO: figure out if it's needed)
+    BrokerSpecs = [
         #{
-            id => lambda_registry,
-            start => {lambda_registry, start_link, [Bootstrap]},
-            modules => [lambda_registry]
+            id => lambda_broker,
+            start => {lambda_broker, start_link, [Bootstrap]},
+            modules => [lambda_broker]
         }
     ],
-    {ok, {SupFlags, Authority ++ RegistrySpecs}}.
+    {ok, {SupFlags, Authority ++ BrokerSpecs}}.

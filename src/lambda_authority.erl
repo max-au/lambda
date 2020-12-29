@@ -33,13 +33,13 @@
 %% @doc
 %% Starts the server outside of supervision hierarchy.
 %% Useful for testing in conjunction with peer.
--spec start(Neighbours :: lambda_registry:points()) -> gen:start_ret().
+-spec start(Neighbours :: lambda_broker:points()) -> gen:start_ret().
 start(Neighbours) ->
     gen_server:start({local, ?MODULE}, ?MODULE, [Neighbours], []).
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(lambda_registry:points()) -> gen:start_ret().
+-spec start_link(lambda_broker:points()) -> gen:start_ret().
 start_link(Neighbours) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [Neighbours], []).
 
@@ -58,26 +58,32 @@ registries() ->
 %%--------------------------------------------------------------------
 %% Cluster authority
 
--type name() :: term().
+%% How many remote exchanges is considered to be a healthy amount.
+-define (REMOTE_EXCHANGE_REDUNDANCY_FACTOR, 2).
 
 -record(lambda_authority_state, {
     %% keeping address of "self" cached
     self :: lambda_epmd:address(),
-    %% name => processes mapping. For every name, a list of
-    %%  processes registered under this name is maintained, and a
-    %%  list of processes listening for updates to the name.
-    registry = #{} :: #{name() => {Pub :: [pid()], Sub :: [pid()]}},
+    %% modules known to the authority, mapped to exchanges
+    exchanges = #{} :: #{module() => {Local :: pid(), Remote :: [pid()]}},
     %% other authorities. When a new node comes up, it is expected to
     %%  eventually connect to all authorities.
     authorities = #{} :: #{pid() => lambda_epmd:address()},
-    %% non-authority peers and their addresses
-    registries = #{} :: #{pid() => lambda_epmd:address()}
+    %% brokers connected
+    brokers = #{} :: #{pid() => lambda_epmd:address()}
 }).
 
 -type state() :: #lambda_authority_state{}.
 
--spec init([Neighbours :: lambda_registry:points()]) -> {ok, state()}.
-init([Neighbours]) ->
+%% -define(DEBUG, true).
+-ifdef (DEBUG).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
+-else.
+-define (dbg(Fmt, Arg), ok).
+-endif.
+
+-spec init([Authorities :: lambda_broker:points()]) -> {ok, state()}.
+init([Authorities]) ->
     %% bootstrap discovery. Race condition possible, when all nodes
     %%  start at once, and never retry.
     Self = lambda_epmd:get_node(node()),
@@ -85,43 +91,51 @@ init([Neighbours]) ->
         fun (Location, Addr) ->
             ok = lambda_epmd:set_node(Location, Addr),
             Location ! {authority, self(), Self}
-        end, Neighbours),
+        end, Authorities),
+    ?dbg("AUTH discovering ~200p", [Authorities]),
     {ok, #lambda_authority_state{self = Self}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
-handle_call(registries, _From, #lambda_authority_state{registries = Regs} = State) ->
+
+handle_call(registries, _From, #lambda_authority_state{brokers = Regs} = State) ->
     {reply, maps:keys(Regs), State}.
 
 handle_cast(_Cast, _State) ->
-    error(badarg).
+    error(notsup).
 
-%% Registry publishing a Name globally
-handle_info({publish, _Name, _Pid}, #lambda_authority_state{} = State) ->
-    %% TODO: implement
-    {noreply, State};
-
-%% Subscribes to Name changes globally
-handle_info({subscribe, _Name, _Pid}, #lambda_authority_state{} = State) ->
-    %% TODO: implement
-    {noreply, State};
+%% Broker requesting exchanges for a Module
+handle_info({exchange, Module, Broker}, #lambda_authority_state{} = State) ->
+    %% are there enough exchanges for this module?
+    {Exch, State1} = ensure_exchange(Module, State),
+    %% simulate a reply
+    Broker ! {exchange, Module, Exch},
+    %% subscribe broker to all updates to exchanges for the module
+    {noreply, State1#lambda_authority_state{}};
 
 %% authority discovered by another Authority
-handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, registries = Regs} = State) ->
+handle_info({authority, Peer, _Addr}, State) when Peer =:= self() ->
+    %% discovered self
+    {noreply, State};
+handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, brokers = Regs} = State)
+    when not is_map_key(Peer, Auth) ->
+    io:format(standard_error, "AUTH ANOTHER ~p ~200p", [Peer, Addr]),
     _MRef = monitor(process, Peer),
     %% exchange known registries - including ourself!
-    erlang:send(Peer, {exchange, Auth#{self() => Self}, Regs}, [noconnect]),
+    erlang:send(Peer, {quorum, Auth#{self() => Self}, Regs}, [noconnect]),
     {noreply, State#lambda_authority_state{authorities = Auth#{Peer => peer_addr(Addr)}}};
 
-%% authority discovered by Registry
-handle_info({discover, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, registries = Regs} = State) ->
-    _MRef = monitor(process, Peer),
+%% authority discovered by a Broker
+handle_info({discover, Broker, Addr}, #lambda_authority_state{self = Self, authorities = Auth, brokers = Regs} = State) ->
+    ?dbg("AUTH BEING DISCOVERED by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
+    _MRef = monitor(process, Broker),
     %% send self, and a list of other authorities to discover
-    erlang:send(Peer, {authority, self(), Self, Auth}, [noconnect]),
-    {noreply, State#lambda_authority_state{registries = Regs#{Peer => peer_addr(Addr)}}};
+    erlang:send(Broker, {authority, self(), Self, Auth}, [noconnect]),
+    {noreply, State#lambda_authority_state{brokers = Regs#{Broker => peer_addr(Addr)}}};
 
 %% exchanging information from another Authority
-handle_info({exchange, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, authorities = Others, registries = Regs} = State) ->
+handle_info({quorum, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, authorities = Others, brokers = Regs} = State) ->
+    ?dbg("AUTH QUORUM ~200p ~200p", [MoreAuth, MoreRegs]),
     %% merge authorities.
     UpdatedAuth = maps:fold(
         fun (NewAuth, _Addr, Existing) when is_map_key(NewAuth, Existing) ->
@@ -143,14 +157,14 @@ handle_info({exchange, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self,
                 ok = erlang:send(Reg, SelfAuthMsg, [nosuspend]),
                 ExReg#{Reg => Addr}
         end, Regs, MoreRegs),
-    {noreply, State#lambda_authority_state{authorities = UpdatedAuth, registries = UpdatedReg}};
+    {noreply, State#lambda_authority_state{authorities = UpdatedAuth, brokers = UpdatedReg}};
 
 %% Handling disconnects from authorities and registries
-handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{authorities = Auth, registries = Regs} = State) ->
-    %% it is far more common to have Registry disconnect, and not Authority
+handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{authorities = Auth, brokers = Regs} = State) ->
+    %% it is far more common to have Broker disconnect, and not Authority
     case maps:take(Pid, Regs) of
         {_, NewRegs} ->
-            {noreply, State#lambda_authority_state{registries = NewRegs}};
+            {noreply, State#lambda_authority_state{brokers = NewRegs}};
         error ->
             case maps:take(Pid, Auth) of
                 {_, NewAuth} ->
@@ -163,6 +177,22 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{auth
 
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->
+    case maps:find(Module, Exch) of
+        {ok, {Local, Remote}} when is_pid(Local) ->
+            {[Local | Remote], State};
+        {ok, {undefined, Remote}} when length(Remote) >= ?REMOTE_EXCHANGE_REDUNDANCY_FACTOR ->
+            {Remote, State};
+        {ok, {undefined, Remote}} ->
+            %% not enough remote exchanges, start one locally
+            {ok, New} = lambda_exchange:start_link(Module), % %% TODO: avoid crashing authority here?
+            {[New | Remote], State#lambda_authority_state{exchanges = Exch#{Module => {New, Remote}}}};
+        error ->
+            %% no exchanges at all
+            {ok, New} = lambda_exchange:start_link(Module), %% TODO: avoid crashing authority here?
+            {[New], State#lambda_authority_state{exchanges = Exch#{Module => {New, []}}}}
+    end.
 
 peer_addr({ip, Addr, Port}) ->
     {ip, Addr, Port};

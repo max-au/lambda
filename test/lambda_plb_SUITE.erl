@@ -98,7 +98,7 @@ multi_echo(Count) ->
 make_node(Args, Capacity) ->
     {ok, Bootstrap} = application:get_env(lambda, bootstrap),
     {Peer, Node} = lambda_test:start_node_link(Bootstrap, Args, false),
-    %% Peer will connect back to us at some point later, courtesy of lambda_registry and authority
+    %% Peer will connect back to us at some point later, courtesy of lambda_broker and authority
     {ok, Worker} = peer:apply(Peer, lambda_server, start, [?MODULE, Capacity]),
     unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
     {Node, Peer, Worker, Capacity}.
@@ -122,7 +122,7 @@ lb() ->
     [{doc, "Tests weighted load balancer"}].
 
 lb(Config) when is_list(Config) ->
-    WorkerCount = 4,
+    WorkerCount = 2,
     SampleCount = 1000,
     Precision = 3,
     ClientConcurrency = 100,
@@ -130,9 +130,7 @@ lb(Config) when is_list(Config) ->
     %% start worker nodes, when every next node has +1 more capacity
     Peers = lambda_async:pmap([{fun make_node/2, [["+S", integer_to_list(Seq)], Seq]}
         || Seq <- lists:seq(1, WorkerCount)]),
-    %% wait for capacity from all 4 nodes
-    Lb = ?config(lb, Config),
-    ?assertEqual(lists:sum(lists:seq(1, WorkerCount)), lambda_plb:capacity(Lb)),
+    %% don't care about capacity waiting! this it the WHOLE IDEA!
     %% fire samples: spawn a process per request
     Spawned = [spawn_monitor(
         fun () -> [lambda_plb:call(?MODULE, pi, [Precision], infinity) || _ <- lists:seq(1, SampleCount div ClientConcurrency)] end)
@@ -293,9 +291,9 @@ timed(Callers, CallsPerCaller, CapPerNode, Nodes) ->
 %%    Pid ! Req,
 %%    {ok, {forward, Pid}}.
 %% wait for high watermark
-%%    _ = gen_event:add_handler(plb:event_bus(Scope), ?MODULE, {forward, self()}),
-%%    Capacity = receive {high_watermark, Scope, Actual} -> Actual end,
-%%    gen_event:delete_handler(plb:event_bus(Scope), ?MODULE, {forward, self()}),
+%%    _ = gen_event:add_handler(plb:event_bus(Module), ?MODULE, {forward, self()}),
+%%    Capacity = receive {high_watermark, Module} -> Actual end,
+%%    gen_event:delete_handler(plb:event_bus(Module), ?MODULE, {forward, self()}),
 %%    %%
 %%    ct:pal("Ready to serve with ~b capacity", [Capacity]),
 %%    %%

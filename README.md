@@ -31,17 +31,11 @@ This project has no compile-time or run-time dependencies.
 ### Running tests
 Smoke tests are implemented in lambda_SUITE.
 
-Running any tests will fetch additional libraries as dependencies. This is only
-necessary to run the benchmarks (that are disabled by default). Running smoke
-tests is as easy as:
+Running any tests will fetch additional libraries as dependencies.
+This suite uses PropEr library to simulate all possible state changes.
     
     $ rebar3 ct --cover && rebar3 cover --verbose
 
-Running property-based tests:
-
-    $ rebar3 ct --suite lambda_proper_SUITE
-
-This suite uses PropEr library to simulate all possible state changes.
 
 ### Formal model
 Used by PropEr library to generate stateful test call sequence.
@@ -50,7 +44,7 @@ Generated events:
  * start peer node (up to some limit)
  
 Properties:
- * group contains all processes that joined the group on all dist-visible nodes running the same scope
+ * group contains all processes that joined the group on all dist-visible nodes running the same module
 
 ## Changelog
 
