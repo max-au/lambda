@@ -73,7 +73,7 @@ basic(Config) when is_list(Config) ->
     ok = lambda_epmd:set_node(Node, Addr),
     true = net_kernel:connect_node(Node),
     %% testing reverse access (IP address taken from connection)
-    {ip, _, ListenPort} = lambda_epmd:get_node(node()),
+    {ip, _, ListenPort} = lambda_epmd:get_node(),
     %% figure out what the peer has connected to
     SelfPort = rpc:call(Node, ets, lookup_element, [sys_dist, node(), 6]),
     {ok, {Ip, _EphemeralPort}} = rpc:call(Node, inet, peername, [SelfPort]),

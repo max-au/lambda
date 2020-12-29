@@ -18,29 +18,36 @@ start_link() ->
 
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
+    %% all children can restart independently
     %% allow 2 restarts every 10 seconds
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
-    {ok, App} = application:get_application(),
-    %% Bootstrap format is a map of {registered_name, node} => epmd_address.
-    Bootstrap = application:get_env(App, bootstrap, #{}),
-    %% Authority: start if configured
-    %% Deliberately crash if misconfigured (non-boolean)
-    Authority = case application:get_env(App, authority, false) of
-                    true ->
-                        [#{
-                            id => lambda_authority,
-                            start => {lambda_authority, start_link, [Bootstrap]},
-                            modules => [lambda_authority]
-                        }];
-                    false ->
-                        []
-                end,
-    %% Broker is always started (TODO: figure out if it's needed)
-    BrokerSpecs = [
+    %% just in case: lambda may run as included application
+    App = case application:get_application() of {ok, A} -> A; undefined -> lambda end,
+    %% child spec for bootstrap server
+    {Authority, Boot} =
+        case application:get_env(App, bootstrap) of
+            {ok, Bootstrap} ->
+                {application:get_env(App, authority, false), Bootstrap};
+            undefined ->
+                {true, #{}}
+        end,
+    %%
+    BootSpec =
+        #{
+            id => lambda_bootstrap,
+            start => {lambda_bootstrap, start_link, [Boot]},
+            modules => [lambda_bootstrap]
+        },
+    AuthoritySpec =
+        #{
+            id => lambda_authority,
+            start => {lambda_authority, start_link, [lambda_bootstrap]},
+            modules => [lambda_authority]
+        },
+    BrokerSpec =
         #{
             id => lambda_broker,
-            start => {lambda_broker, start_link, [Bootstrap]},
+            start => {lambda_broker, start_link, [lambda_bootstrap]},
             modules => [lambda_broker]
-        }
-    ],
-    {ok, {SupFlags, Authority ++ BrokerSpecs}}.
+        },
+    {ok, {SupFlags, if Authority -> [BootSpec, AuthoritySpec, BrokerSpec]; true -> [BootSpec, BrokerSpec] end}}.

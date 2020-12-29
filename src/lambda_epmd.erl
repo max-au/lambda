@@ -12,7 +12,8 @@
     restore/0,
     set_node/2,
     del_node/1,
-    get_node/1
+    get_node/1,
+    get_node/0
 ]).
 
 %% Callbacks required for epmd module implementation
@@ -32,14 +33,6 @@
     handle_call/3,
     handle_cast/2
 ]).
-
-%% Erlang node address. Expected to be extended to add DNS and other discovery layers.
--type address() ::
-    {ip, inet:ip_address(), inet:port_number()} |   %% IP address and port number
-    {dns, string(), inet:port_number()} |           %% DNS name and port number
-    {epmd, string()}.                               %% DNS name, epmd
-
--export_type([address/0]).
 
 -behaviour(gen_server).
 
@@ -99,7 +92,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc Sets the mapping between node name and address to access the node.
--spec set_node(node() | pid(), address()) -> ok.
+-spec set_node(node() | pid(), lambda:address()) -> ok.
 set_node(Pid, Address) when is_pid(Pid) ->
     set_node(node(Pid), Address);
 set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
@@ -115,9 +108,17 @@ del_node(Node) ->
     gen_server:call(?MODULE, {del, Node}).
 
 %% @doc Returns mapping of the node name to an address.
--spec get_node(node()) -> address() | error.
+-spec get_node(node()) -> lambda:address() | error.
 get_node(Node) ->
     gen_server:call(?MODULE, {get, Node}).
+
+%% @doc Returns this node distribution connectivity info, that is
+%%      expected to work when sent to other nodes via distribution
+%%      channels. It is expected to return external node address,
+%%      if host is behind NAT.
+-spec get_node() -> lambda:address().
+get_node() ->
+    gen_server:call(?MODULE, {get, node()}).
 
 %%--------------------------------------------------------------------
 %% EPMD implementation
@@ -203,7 +204,7 @@ address_please(Name, Host, AddressFamily) ->
 %% EPMD state: maps node names to addresses.
 %% Current limitation: a node can only have a single address,
 %%  either IPv4 or IPv6.
--type state() :: #{node() => address()}.
+-type state() :: #{node() => lambda:address()}.
 
 -spec init([]) -> {ok, state()}.
 init([]) ->

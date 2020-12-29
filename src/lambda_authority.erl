@@ -33,15 +33,15 @@
 %% @doc
 %% Starts the server outside of supervision hierarchy.
 %% Useful for testing in conjunction with peer.
--spec start(Neighbours :: lambda_broker:points()) -> gen:start_ret().
-start(Neighbours) ->
-    gen_server:start({local, ?MODULE}, ?MODULE, [Neighbours], []).
+-spec start(gen:emgr_name()) -> gen:start_ret().
+start(BootProc) ->
+    gen_server:start({local, ?MODULE}, ?MODULE, [BootProc], []).
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(lambda_broker:points()) -> gen:start_ret().
-start_link(Neighbours) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [Neighbours], []).
+-spec start_link(gen:emgr_name()) -> gen:start_ret().
+start_link(BootProc) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [BootProc], []).
 
 %%--------------------------------------------------------------------
 %% API
@@ -82,11 +82,12 @@ registries() ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init([Authorities :: lambda_broker:points()]) -> {ok, state()}.
-init([Authorities]) ->
+-spec init([gen:emgr_name()]) -> {ok, state()}.
+init([BootProc]) ->
+    Authorities = lambda_bootstrap:bootstrap(BootProc),
     %% bootstrap discovery. Race condition possible, when all nodes
     %%  start at once, and never retry.
-    Self = lambda_epmd:get_node(node()),
+    Self = lambda_epmd:get_node(),
     maps:map(
         fun (Location, Addr) ->
             ok = lambda_epmd:set_node(Location, Addr),

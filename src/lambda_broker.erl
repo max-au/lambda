@@ -38,32 +38,22 @@
 
 -include_lib("kernel/include/logger.hrl").
 
-%% Process location (similar to emgr_name()). Process ID (pid)
-%%  designates both node name and ID. If process ID is not known,
-%%  locally registered process name can be used.
--type location() :: pid() | {atom(), node()}.
-
-%% Points: maps location to the address
--type points() :: #{location() => lambda_epmd:address()}.
-
--export_type([location/0, points/0]).
-
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server outside of supervision hierarchy.
 %% Useful for testing in conjunction with 'peer'. Unlike start_link,
 %%  throws immediately, without the need to unwrap the {ok, Pid} tuple.
 %% Does not register name locally (testing it is!)
--spec start(points()) -> gen:start_ret().
-start(Bootstrap) ->
-    {ok, Pid} = gen_server:start(?MODULE, Bootstrap, []),
+-spec start(gen:emgr_name()) -> gen:start_ret().
+start(BootProc) ->
+    {ok, Pid} = gen_server:start(?MODULE, [BootProc], []),
     Pid.
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(points()) -> gen:start_ret().
-start_link(Bootstrap) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Bootstrap, []).
+-spec start_link(gen:emgr_name()) -> gen:start_ret().
+start_link(BootProc) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [BootProc], []).
 
 %% @doc returns list of authorities known to this broker
 -spec authorities(gen:emgr_name()) -> [pid()].
@@ -128,19 +118,21 @@ cancel(Srv, Proc) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init(points()) -> {ok, state()}.
-init(Bootstrap) ->
+-spec init([gen:emgr_name()]) -> {ok, state()}.
+init([BootProc]) ->
+    Bootstrap = lambda_bootstrap:bootstrap(BootProc),
     %% bootstrap discovery: attempt to find authorities
-    Self = lambda_epmd:get_node(node()),
+    Self = lambda_epmd:get_node(),
     ?dbg("discovering ~200p", [Bootstrap]),
     %% initial discovery
     discover(Bootstrap, Self),
     {ok, #lambda_broker_state{self = Self}}.
 
-handle_call({Type, Module, Seller, Quantity}, _From, #lambda_broker_state{monitors = Monitors} = State)
+handle_call({_Type, _Module, Seller, _Quantity}, _From, #lambda_broker_state{monitors = Monitors} = State)
     when is_map_key(Seller, Monitors) ->
-    ?dbg("~s received updated quantity for ~s (~b)", [Type, Module, Quantity]),
+    ?dbg("~s received updated quantity for ~s (~b)", [_Type, _Module, _Quantity]),
     %% update outstanding sell order with new Quantity
+    %% TODO: implement !!!
     {reply, no, State};
 handle_call({Type, Module, Trader, Quantity}, _From, #lambda_broker_state{self = Self, next_id = Id, authority = Authority, orders = Orders, monitors = Monitors} = State)
     when Type =:= buy; Type =:= sell ->
@@ -225,7 +217,7 @@ handle_info({order, Id, Module, Sellers}, #lambda_broker_state{orders = Orders} 
     end;
 
 %% something went down: authority, seller, buyer
-handle_info({'DOWN', _Mref, _, Pid, _Reason}, #lambda_broker_state{authority = Auth} = State) ->
+handle_info({'DOWN', _Mref, process, Pid, _Reason}, #lambda_broker_state{authority = Auth} = State) ->
     %% it's very rare for an authority to go down, but it's also very fast to check
     case maps:take(Pid, Auth) of
         {_, NewAuth} ->
