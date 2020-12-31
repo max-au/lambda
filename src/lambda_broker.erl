@@ -17,7 +17,6 @@
 
 %% API
 -export([
-    start/1,
     start_link/1,
     authorities/1,
     %% broker API
@@ -40,20 +39,10 @@
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts the server outside of supervision hierarchy.
-%% Useful for testing in conjunction with 'peer'. Unlike start_link,
-%%  throws immediately, without the need to unwrap the {ok, Pid} tuple.
-%% Does not register name locally (testing it is!)
--spec start(gen:emgr_name()) -> gen:start_ret().
-start(BootProc) ->
-    {ok, Pid} = gen_server:start(?MODULE, [BootProc], []),
-    Pid.
-
-%% @doc
 %% Starts the server and links it to calling process.
 -spec start_link(gen:emgr_name()) -> gen:start_ret().
 start_link(BootProc) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [BootProc], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, BootProc, []).
 
 %% @doc returns list of authorities known to this broker
 -spec authorities(gen:emgr_name()) -> [pid()].
@@ -67,21 +56,24 @@ authorities(Broker) ->
 %%      order, which is sent (updated) to all exchanges serving the
 %%      Module. If there are no exchanges known, authorities are
 %%      queried.
+%%      Asynchronous, does not guarantee success, therefore Seller
+%%      is expected to monitor the broker.
 -spec sell(gen:emgr_name(), module(), pos_integer()) -> ok.
 sell(Srv, Name, Quantity) ->
-    gen_server:call(Srv, {sell, Name, self(), Quantity}).
+    gen_server:cast(Srv, {sell, Name, self(), Quantity}).
 
 %% @doc Creates an outstanding "buy" order, which is fanned out to
 %%      all known exchanges serving the module.
+%%      Asynchronous, buyer is expected to monitor the broker.
 -spec buy(gen:emgr_name(), module(), pos_integer()) -> ok.
 buy(Srv, Name, Quantity) ->
     %% Pass self() explicitly to allow tricks with proxy-ing gen_server calls
-    gen_server:call(Srv, {buy, Name, self(), Quantity}).
+    gen_server:cast(Srv, {buy, Name, self(), Quantity}).
 
-%% @doc Cancels an outstanding order.
+%% @doc Cancels an outstanding order. Asynchronous.
 -spec cancel(gen:emgr_name(), pid()) -> ok.
 cancel(Srv, Proc) ->
-    gen_server:call(Srv, {cancel, Proc}).
+    gen_server:cast(Srv, {cancel, Proc}).
 
 %%--------------------------------------------------------------------
 %% Implementation (gen_server)
@@ -97,6 +89,8 @@ cancel(Srv, Proc) ->
 -record(lambda_broker_state, {
     %% self address (used by authorities)
     self :: lambda_epmd:address(),
+    %% bootstrap process informatin
+    boot :: gen:emgr_name(),
     %% authority processes + authority addresses to peer discovery
     authority = #{} :: #{pid() => lambda_epmd:address()},
     %% exchanges connections
@@ -118,61 +112,63 @@ cancel(Srv, Proc) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init([gen:emgr_name()]) -> {ok, state()}.
-init([BootProc]) ->
+-spec init(gen:emgr_name()) -> {ok, state()}.
+init(BootProc) ->
     Bootstrap = lambda_bootstrap:bootstrap(BootProc),
     %% bootstrap discovery: attempt to find authorities
     Self = lambda_epmd:get_node(),
-    ?dbg("discovering ~200p", [Bootstrap]),
     %% initial discovery
     discover(Bootstrap, Self),
-    {ok, #lambda_broker_state{self = Self}}.
-
-handle_call({_Type, _Module, Seller, _Quantity}, _From, #lambda_broker_state{monitors = Monitors} = State)
-    when is_map_key(Seller, Monitors) ->
-    ?dbg("~s received updated quantity for ~s (~b)", [_Type, _Module, _Quantity]),
-    %% update outstanding sell order with new Quantity
-    %% TODO: implement !!!
-    {reply, no, State};
-handle_call({Type, Module, Trader, Quantity}, _From, #lambda_broker_state{self = Self, next_id = Id, authority = Authority, orders = Orders, monitors = Monitors} = State)
-    when Type =:= buy; Type =:= sell ->
-    ?dbg("~s ~b ~s for ~p", [Type, Quantity, Module, Trader]),
-    %% monitor seller
-    MRef = erlang:monitor(process, Trader),
-    NewMons = Monitors#{Trader => {Type, Module, MRef}},
-    %% request exchanges from all authorities (unless already known)
-    Existing = maps:get(Module, Orders, []),
-    NewOrders =
-        case maps:find(Module, State#lambda_broker_state.exchanges) of
-            {ok, Exch} when Type =:= buy ->
-                %% already subscribed, send orders to known exchanges
-                [lambda_exchange:buy(Ex, Id, Quantity) || Ex <- Exch],
-                [{Id, Type, Trader, Quantity, []} | Existing];
-            {ok, Exch} when Type =:= sell ->
-                %% already subscribed, send orders to known exchanges
-                [lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity) || Ex <- Exch],
-                [{Id, Type, Trader, Quantity, []} | Existing];
-            error ->
-                %% not subscribed to any exchanges yet
-                subscribe_exchange(Authority, Module),
-                [{Id, Type, Trader, Quantity, []} | Existing]
-        end,
-    {reply, ok, State#lambda_broker_state{next_id = Id + 1, monitors = NewMons, orders = Orders#{Module => NewOrders}}};
-
-%% handles cancellations for both sell and buy orders (should it be split?)
-handle_call({cancel, Trader}, _From, State) ->
-    {reply, ok, cancel(Trader, true, State)};
+    {ok, #lambda_broker_state{self = Self, boot = BootProc}}.
 
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
     {reply, maps:keys(Auth), State}.
 
-handle_cast(_Cast, _State) ->
-    error(notsup).
+handle_cast({Type, Module, Trader, Quantity}, #lambda_broker_state{self = Self, next_id = Id, exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
+    when Type =:= buy; Type =:= sell ->
+    case maps:find(Trader, Monitors) of
+        {ok, {_Type, Module, _MRef}} ->
+            ?dbg("~s received updated quantity from ~p for ~s (~b)", [Type, Trader, Module, Quantity]),
+            %% update outstanding sell order with new Quantity
+            Outstanding = maps:get(Module, Orders),
+            %% NewOrders = lists:keyreplace(Trader, 3, Orders, {Id, Type, Trader, Quantity, Ex}),
+            NewOut = Outstanding,
+            %% TODO: implement !!!
+            %% notify known exchanges
+            %% Exch = maps:get(Module, Exchanges, []),
+            {noreply, State#lambda_broker_state{
+                orders = Orders#{Module => NewOut}}};
+        error ->
+            ?dbg("~s ~b ~s for ~p", [Type, Quantity, Module, Trader]),
+            %% monitor seller
+            MRef = erlang:monitor(process, Trader),
+            NewMons = Monitors#{Trader => {Type, Module, MRef}},
+            Existing = maps:get(Module, Orders, []),
+            %% request exchanges from all authorities (unless already known)
+            case maps:find(Module, Exchanges) of
+                {ok, Exch} when Type =:= buy ->
+                    %% already subscribed, send orders to known exchanges
+                    [lambda_exchange:buy(Ex, Id, Quantity) || Ex <- Exch];
+                {ok, Exch} when Type =:= sell ->
+                    %% already subscribed, send orders to known exchanges
+                    [lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity) || Ex <- Exch];
+                error ->
+                    %% not subscribed to any exchanges yet
+                    subscribe_exchange(Authority, Module)
+            end,
+            NewOrders = [{Id, Type, Trader, Quantity, []} | Existing],
+            {noreply, State#lambda_broker_state{next_id = Id + 1, monitors = NewMons,
+                orders = Orders#{Module => NewOrders}}}
+    end;
+
+%% handles cancellations for both sell and buy orders (should it be split?)
+handle_cast({cancel, Trader}, State) ->
+    {reply, cancel(Trader, true, State)}.
 
 handle_info({authority, NewAuth, _AuthAddr, _MoreAuth}, #lambda_broker_state{authority = Auth} = State)
     when is_map_key(NewAuth, Auth) ->
-    io:format(standard_error, "~s: ~p duplicate authority ~s (brings ~200p and ~200p)", [node(), self(), node(NewAuth), _AuthAddr, _MoreAuth]),
+    ?dbg("~s: ~p duplicate authority ~s (brings ~200p and ~200p)", [node(), self(), node(NewAuth), _AuthAddr, _MoreAuth]),
     {noreply, State};
 
 %% authority discovered
@@ -180,6 +176,8 @@ handle_info({authority, NewAuth, AuthAddr, MoreAuth}, #lambda_broker_state{self 
     when not is_map_key(NewAuth, Auth) ->
     ?dbg("authority ~s (~200p) has ~200p", [node(NewAuth), AuthAddr,  MoreAuth]),
     _MRef = erlang:monitor(process, NewAuth),
+    %% new authority may know more exchanges for outstanding orders
+    [subscribe_exchange(#{NewAuth => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
     discover(MoreAuth, Self),
     {noreply, State#lambda_broker_state{authority = Auth#{NewAuth => AuthAddr}}};
 
@@ -193,8 +191,8 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
         ?dbg("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding]),
     [case Type of
          buy -> lambda_exchange:buy(Ex, Id, Quantity);
-         sell -> lambda_exchange:sell(Ex, {Pid, Self}, Id, Quantity)
-     end || Ex <- NewExch, {Id, Type, Pid, Quantity, Prev} <- Outstanding,
+         sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity)
+     end || Ex <- NewExch, {Id, Type, Trader, Quantity, Prev} <- Outstanding,
         lists:member(Ex, Prev) =:= false],
     {noreply, State#lambda_broker_state{exchanges = Exchanges#{Module => NewExch ++ Known}}};
 
@@ -221,10 +219,10 @@ handle_info({'DOWN', _Mref, process, Pid, _Reason}, #lambda_broker_state{authori
     %% it's very rare for an authority to go down, but it's also very fast to check
     case maps:take(Pid, Auth) of
         {_, NewAuth} ->
-            ?dbg("authority down: ~s ~p", [node(Pid), Pid]),
+            ?dbg("authority down: ~s ~p (~200p)", [node(Pid), Pid, _Reason]),
             {noreply, State#lambda_broker_state{authority = NewAuth}};
         error ->
-            ?dbg("canceling order from ~p", [Pid]),
+            ?dbg("canceling (down) order from ~p (~200p)", [Pid, _Reason]),
             {noreply, cancel(Pid, false, State)}
     end;
 
@@ -241,7 +239,7 @@ handle_info({discover, Peer, _Port}, #lambda_broker_state{authority = Authority}
 discover(Points, Self) ->
     maps:map(
         fun (Location, Addr) ->
-            ?dbg("~s discovering ~p of ~p", [node(), Location, Addr]),
+            ?dbg("~s discovering ~200p of ~300p", [node(), Location, Addr]),
             lambda_epmd:set_node(Location, Addr),
             Location ! {discover, self(), Self}
         end, Points).
@@ -249,6 +247,7 @@ discover(Points, Self) ->
 cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors, exchanges = Exchanges} = State) ->
     case maps:take(Pid, Monitors) of
         {{exchange, Module, _MRef}, NewMonitors} ->
+            ?dbg("exchange ~p for ~s down, known: ~200p", [Pid, Module, maps:get(Module, Exchanges, error)]),
             case maps:get(Module, Exchanges) of
                 [Pid] ->
                     State#lambda_broker_state{exchanges = maps:remove(Module, Exchanges), monitors = NewMonitors};
@@ -256,6 +255,7 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
                     State#lambda_broker_state{exchanges = Exchanges#{Module => lists:delete(Pid, Pids)}, monitors = NewMonitors}
             end;
         {{Type, Module, MRef}, NewMonitors} ->
+            ?dbg("cancel ~s order for ~s from ~p, orders: ~200p", [Type, Module, Pid, maps:get(Module, Orders)]),
             %% demonitor if it's forced cancellation
             Demonitor andalso erlang:demonitor(MRef, [flush]),
             %% enumerate to find the order
@@ -267,7 +267,7 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
                 Outstanding ->
                     %% other orders are still in
                     NewOut = lists:keydelete(Pid, 3, Outstanding),
-                    State#lambda_broker_state{orders = Orders#{Module => {Exchanges, NewOut}}, monitors = NewMonitors}
+                    State#lambda_broker_state{orders = Orders#{Module => NewOut}, monitors = NewMonitors}
             end
     end.
 

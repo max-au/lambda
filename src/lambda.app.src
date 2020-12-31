@@ -8,9 +8,10 @@
     stdlib
    ]},
   {env,[
-   %% {bootstrap, #{}} %% see lambda_bootstrap:bootspec()
-   %% when bootstrap is not defined, lambda starts in root authority mode
-   %% Otherwise, {authority, true} controls whether to start authority or not
+   %% {bootstrap, undefined}, %% see lambda_bootstrap:bootspec()
+   %% {authority, bootstrap =:= undefined} %% when bootstrap is not defined,
+   %% lambda starts in root authority mode. Otherwise, {authority, true}
+   %% tells the app to start authority
   ]},
 
   {licenses, ["BSD 3-clause clear"]},

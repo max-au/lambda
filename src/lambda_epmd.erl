@@ -242,8 +242,14 @@ handle_call({register, Name, PortNo, Family}, _From, State) ->
                 %% LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
                 %% Local = [Valid || Valid <- LocalUp, is_list(inet:ntoa(Valid))],
                 %% native resolver cannot be used, so use one written in pure Erlang
-                {ok, #hostent{h_addr_list = Addrs}} = inet_res:gethostbyname(Host, Family),
-                hd(Addrs)
+                case inet_res:gethostbyname(Host, Family) of
+                    {ok, #hostent{h_addr_list = Addrs}} ->
+                        hd(Addrs);
+                    {error, nxdomain} ->
+                        %% TODO: better fallback. Testing of this branch requires non-connected laptop,
+                        %%  and I'm developing this while on a plane
+                        {127, 0, 0, 1} %% fallback to localhost as default
+                end
         end,
     {reply, {ok, 1}, State#{Node => {ip, Addr, PortNo}}}.
 

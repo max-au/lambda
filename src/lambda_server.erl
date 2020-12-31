@@ -123,6 +123,7 @@ server_loop(To, InFlight, Total, Processed, Capacity) when Processed < Capacity 
             server_loop(To, InFlight - 1, Total + 1, Processed + 1, Capacity);
         {'$gen_call', From, get_count} ->
             %% gen_server call hack, for testing mainly
+            ?dbg("conn ~p counted ~b (~b)", [self(), InFlight, Total]),
             gen:reply(From, {InFlight, Total}),
             server_loop(To, InFlight, Total, Processed, Capacity)
     end;

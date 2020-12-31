@@ -35,13 +35,13 @@
 %% Useful for testing in conjunction with peer.
 -spec start(gen:emgr_name()) -> gen:start_ret().
 start(BootProc) ->
-    gen_server:start({local, ?MODULE}, ?MODULE, [BootProc], []).
+    gen_server:start({local, ?MODULE}, ?MODULE, BootProc, []).
 
 %% @doc
 %% Starts the server and links it to calling process.
 -spec start_link(gen:emgr_name()) -> gen:start_ret().
 start_link(BootProc) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [BootProc], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, BootProc, []).
 
 %%--------------------------------------------------------------------
 %% API
@@ -64,6 +64,8 @@ registries() ->
 -record(lambda_authority_state, {
     %% keeping address of "self" cached
     self :: lambda_epmd:address(),
+    %% bootstrap process information
+    boot :: gen:emgr_name(),
     %% modules known to the authority, mapped to exchanges
     exchanges = #{} :: #{module() => {Local :: pid(), Remote :: [pid()]}},
     %% other authorities. When a new node comes up, it is expected to
@@ -77,13 +79,13 @@ registries() ->
 
 %% -define(DEBUG, true).
 -ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: authority " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init([gen:emgr_name()]) -> {ok, state()}.
-init([BootProc]) ->
+-spec init(gen:emgr_name()) -> {ok, state()}.
+init(BootProc) ->
     Authorities = lambda_bootstrap:bootstrap(BootProc),
     %% bootstrap discovery. Race condition possible, when all nodes
     %%  start at once, and never retry.
@@ -93,8 +95,8 @@ init([BootProc]) ->
             ok = lambda_epmd:set_node(Location, Addr),
             Location ! {authority, self(), Self}
         end, Authorities),
-    ?dbg("AUTH discovering ~200p", [Authorities]),
-    {ok, #lambda_authority_state{self = Self}}.
+    ?dbg("init: discovering ~200p", [Authorities]),
+    {ok, #lambda_authority_state{self = Self, boot = BootProc}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
@@ -120,7 +122,7 @@ handle_info({authority, Peer, _Addr}, State) when Peer =:= self() ->
     {noreply, State};
 handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, brokers = Regs} = State)
     when not is_map_key(Peer, Auth) ->
-    io:format(standard_error, "AUTH ANOTHER ~p ~200p", [Peer, Addr]),
+    ?dbg("PEER AUTHORITY ~p ~200p", [Peer, Addr]),
     _MRef = monitor(process, Peer),
     %% exchange known registries - including ourself!
     erlang:send(Peer, {quorum, Auth#{self() => Self}, Regs}, [noconnect]),
@@ -128,11 +130,17 @@ handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, author
 
 %% authority discovered by a Broker
 handle_info({discover, Broker, Addr}, #lambda_authority_state{self = Self, authorities = Auth, brokers = Regs} = State) ->
-    ?dbg("AUTH BEING DISCOVERED by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
+    ?dbg("BEING DISCOVERED by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
     _MRef = monitor(process, Broker),
     %% send self, and a list of other authorities to discover
     erlang:send(Broker, {authority, self(), Self, Auth}, [noconnect]),
     {noreply, State#lambda_authority_state{brokers = Regs#{Broker => peer_addr(Addr)}}};
+
+%% broker cancels a subscription for module exchange
+handle_info({cancel, Module, Broker}, #lambda_authority_state{exchanges = Exchanges} = State) ->
+    ?dbg("cancel ~s subscription for ~s (~200p)", [Module, node(Broker), Broker]),
+    %% send self, and a list of other authorities to discover
+    {noreply, State#lambda_authority_state{exchanges = Exchanges}};
 
 %% exchanging information from another Authority
 handle_info({quorum, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, authorities = Others, brokers = Regs} = State) ->

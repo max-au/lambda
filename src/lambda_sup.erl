@@ -29,7 +29,7 @@ init([]) ->
             {ok, Bootstrap} ->
                 {application:get_env(App, authority, false), Bootstrap};
             undefined ->
-                {true, #{}}
+                {true, undefined}
         end,
     %%
     BootSpec =

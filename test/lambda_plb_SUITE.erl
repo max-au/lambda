@@ -45,7 +45,7 @@ init_per_suite(Config) ->
     Config.
 
 end_per_suite(Config) ->
-    ok = lambda_test:end_local(),
+    lambda_test:end_local(),
     Config.
 
 init_per_testcase(throughput, Config) ->
@@ -143,9 +143,10 @@ lb(Config) when is_list(Config) ->
             {0, Count} = gen_server:call(Worker, get_count, infinity),
             ct:pal("Worker ~b/~b received ~b/~b~n",
                 [Seq, WorkerCount, Count, SampleCount * Seq div TotalWeight]),
-            peer:stop(Peer),
             {Seq, Count}
-        end  || {_, Peer, Worker, Seq} <- Peers],
+        end  || {_, _Peer, Worker, Seq} <- Peers],
+    %% stop all peers concurrently
+    lambda_async:pmap([fun () -> peer:stop(P) end || {_, P, _, _} <- Peers]),
     {_, Counts} = lists:unzip(WeightedCounts),
     ?assertEqual(SampleCount, lists:sum(Counts)),
     %%
@@ -169,6 +170,9 @@ fail_capacity_wait(Config) when is_list(Config) ->
     %% spawn just enough requests to exhaust tokens
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
+    %% mut wait until spawned processes at least requested once
+    %% TODO: make it bre reliable, not just a sleep
+    timer:sleep(10),
     %% spawn and kill another batch - so tokens are sent to dead processes
     Dead = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [1], 1) end)
         || _ <- lists:seq(1, Concurrency)],
@@ -185,8 +189,8 @@ fail_capacity_wait(Config) when is_list(Config) ->
     %% ensure all requests were processed (and none of dead requests)
     ?assertEqual({0, Concurrency * 2}, gen_server:call(Worker, get_count)),
     %% ensure Actual time is at least as Expected, but no more than double of it
-    ?assert(Actual > Delay, {actual, Actual, minimum, Delay}),
-    ?assert(Actual < 2 * Delay, {actual, Actual, maximum, Delay * 2}).
+    ?assert(Actual >= Delay, {actual, Actual, minimum, Delay}),
+    ?assert(Actual =< 2 * Delay, {actual, Actual, maximum, Delay * 2}).
 
 call_fail() ->
     [{doc, "Ensure failing calls do not exhaust pool"}].

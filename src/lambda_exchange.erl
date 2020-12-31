@@ -119,21 +119,25 @@ handle_info({buy, Id, Quantity, Broker}, #lambda_exchange_state{module = Module,
             {noreply, match_buy(State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining} | Buy], sell = NewSell})}
     end;
 
-handle_info({sell, SellerContact, Id, Quantity, Broker}, #lambda_exchange_state{sell = Sell} = State) ->
+handle_info({sell, SellerContact, _Id, Quantity, Broker}, #lambda_exchange_state{sell = Sell} = State) ->
     Order =
         case maps:find(Broker, Sell) of
-            {ok, {_OldQ, MRef, Seller, Contact}} ->
-                ?dbg("sell capacity update from ~p for ~b (id ~b)", [Broker, Quantity, Id]),
-                {Quantity, MRef, Seller, Contact};
+            {ok, {_OldQ, MRef, SellerContact}} ->
+                ?dbg("sell capacity update from ~p for ~b (id ~b)", [Broker, Quantity, _Id]),
+                {Quantity, MRef, SellerContact};
+            {ok, {_OldQ, MRef, _DiffSellerContact}} ->
+                ?dbg("sell BROKEN update from ~p for ~b (id ~b, contact: ~300p while expected ~300p)",
+                    [Broker, Quantity, _DiffSellerContact, SellerContact]),
+                {Quantity, MRef, SellerContact};
             error ->
-                ?dbg("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, Id, SellerContact]),
+                ?dbg("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, _Id, SellerContact]),
                 MRef = erlang:monitor(process, Broker),
                 {Quantity, MRef, SellerContact}
         end,
     {noreply, match_buy(State#lambda_exchange_state{sell = Sell#{Broker => Order}})};
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_exchange_state{sell = Sell, buy = Buy} = State) ->
-    ?dbg("detected down ~p, filtering orders", [Pid]),
+    ?dbg("detected broker down ~p (reason ~200p)", [Pid, _Reason]),
     %% filter all buy orders. Can be slow, but this is a resource constrained situation already
     NewBuy = [{Pid, MRef, Id, Quantity} || {Pid1, MRef, Id, Quantity} <- Buy, Pid =/= Pid1],
     {noreply, State#lambda_exchange_state{buy = NewBuy, sell = maps:remove(Pid, Sell)}}.
