@@ -1,9 +1,32 @@
 %% @doc
-%% Lambda authority: process groups implementation,
-%%  providing subscription-based mechanism to update group membership.
+%% Lambda authority: process keeping track of all connected brokers and
+%%  other authorities. When a broker needs to find an exchange to trade
+%%  a module, it sends 'exchange' query to all known authorities,
+%%  and every authority responds with known list of exchanges.
 %%
-%% Every authority keeps the state independently of all other authorities.
-%% Client is responsible for merging the responses.
+%% If authority does not have enough known exchanges, it will start one
+%%  locally, provides that erlang:phash2({node(), Module}) of this
+%%  authority process sorts below threshold from all known authorities.
+%%
+%% It is expected that all authorities are connected to each other,
+%%  forming a full mesh between processes (and corresponding nodes).
+%% Authority remembers connectivity information for all other authorities
+%%  and attempts to re-discover lost authorities (but not brokers).
+%%
+%% When an authority discovers a peer, it also updates all known
+%%  brokers with the new authority list (eventually making all brokers
+%%  to be connected to all authorities, NB: this may be partitioned
+%%  in the future).
+%%
+%% There is an initial bootstrapping process when authority does not
+%%  know any other authority and needs to find some. This information
+%%  can be fed to authority (or broker) via bootstrapping API.
+%%
+%% Authority message exchange protocol:
+%% * authority -> authority:
+%% * authority -> broker:
+%% * broker -> authority:
+%%
 %%
 %% @end
 -module(lambda_authority).
@@ -11,10 +34,9 @@
 
 %% API
 -export([
-    start/1,
     start_link/1,
     authorities/0,
-    registries/0
+    brokers/0
 ]).
 
 -behaviour(gen_server).
@@ -31,14 +53,8 @@
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts the server outside of supervision hierarchy.
-%% Useful for testing in conjunction with peer.
--spec start(gen:emgr_name()) -> gen:start_ret().
-start(BootProc) ->
-    gen_server:start({local, ?MODULE}, ?MODULE, BootProc, []).
-
-%% @doc
-%% Starts the server and links it to calling process.
+%% Starts the server and links it to calling process. Registers a local
+%%  process name.
 -spec start_link(gen:emgr_name()) -> gen:start_ret().
 start_link(BootProc) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, BootProc, []).
@@ -50,10 +66,10 @@ start_link(BootProc) ->
 authorities() ->
     gen_server:call(?MODULE, authorities).
 
-%% @doc returns a list of registries currently connected to this
+%% @doc returns a list of brokers currently connected to this
 %%      authority.
-registries() ->
-    gen_server:call(?MODULE, registries).
+brokers() ->
+    gen_server:call(?MODULE, brokers).
 
 %%--------------------------------------------------------------------
 %% Cluster authority
@@ -101,8 +117,8 @@ init(BootProc) ->
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
 
-handle_call(registries, _From, #lambda_authority_state{brokers = Regs} = State) ->
-    {reply, maps:keys(Regs), State}.
+handle_call(brokers, _From, #lambda_authority_state{brokers = Brokers} = State) ->
+    {reply, maps:keys(Brokers), State}.
 
 handle_cast(_Cast, _State) ->
     error(notsup).
@@ -124,7 +140,7 @@ handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, author
     when not is_map_key(Peer, Auth) ->
     ?dbg("PEER AUTHORITY ~p ~200p", [Peer, Addr]),
     _MRef = monitor(process, Peer),
-    %% exchange known registries - including ourself!
+    %% exchange known brokers - including ourself!
     erlang:send(Peer, {quorum, Auth#{self() => Self}, Regs}, [noconnect]),
     {noreply, State#lambda_authority_state{authorities = Auth#{Peer => peer_addr(Addr)}}};
 
@@ -137,8 +153,8 @@ handle_info({discover, Broker, Addr}, #lambda_authority_state{self = Self, autho
     {noreply, State#lambda_authority_state{brokers = Regs#{Broker => peer_addr(Addr)}}};
 
 %% broker cancels a subscription for module exchange
-handle_info({cancel, Module, Broker}, #lambda_authority_state{exchanges = Exchanges} = State) ->
-    ?dbg("cancel ~s subscription for ~s (~200p)", [Module, node(Broker), Broker]),
+handle_info({cancel, _Module, _Broker}, #lambda_authority_state{exchanges = Exchanges} = State) ->
+    ?dbg("cancel ~s subscription for ~s (~200p)", [_Module, node(_Broker), _Broker]),
     %% send self, and a list of other authorities to discover
     {noreply, State#lambda_authority_state{exchanges = Exchanges}};
 
@@ -153,7 +169,7 @@ handle_info({quorum, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, a
                 _MRef = erlang:monitor(process, NewAuth),
                 Existing#{NewAuth => Addr}
         end, Others, MoreAuth),
-    %% merge registries, notifying newly discovered
+    %% merge brokers, notifying newly discovered
     SelfAuthMsg = {authority, self(), Self, Others},
     UpdatedReg = maps:fold(
         fun (Reg, _Addr, ExReg) when is_map_key(Reg, ExReg) ->
@@ -168,7 +184,7 @@ handle_info({quorum, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, a
         end, Regs, MoreRegs),
     {noreply, State#lambda_authority_state{authorities = UpdatedAuth, brokers = UpdatedReg}};
 
-%% Handling disconnects from authorities and registries
+%% Handling disconnects from authorities and brokers
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{authorities = Auth, brokers = Regs} = State) ->
     %% it is far more common to have Broker disconnect, and not Authority
     case maps:take(Pid, Regs) of

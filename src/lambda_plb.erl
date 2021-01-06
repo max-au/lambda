@@ -1,5 +1,5 @@
 %% @doc
-%%  Lambda probabilistic load balancer. Schedules function
+%%  Probabilistic Load Balancer. Schedules function
 %%  execution on a node selected with randomised weighted
 %%  sampling. Used credit-based approach for implementing
 %%  backpressure: when a node did not provide credit, no
@@ -92,7 +92,7 @@ cast(M, F, A, Timeout) ->
             gen_server:call(Queue, wait, Timeout),
             cast(M, F, A, Timeout);
         To ->
-            erpc:cast(node(To), lambda_server, handle, [To, M, F, A])
+            erpc:cast(node(To), lambda_channel, handle, [To, M, F, A])
     end.
 
 %% @doc Call executed on a node which is selected with weighted random
@@ -106,8 +106,13 @@ call(M, F, A, Timeout) ->
             gen_server:call(Queue, wait, Timeout),
             call(M, F, A, Timeout);
         To ->
-            Rid = erpc:send_request(node(To), lambda_server, handle, [To, M, F, A]),
-            erpc:wait_response(Rid, infinity)
+            Rid = erpc:send_request(node(To), lambda_channel, handle, [To, M, F, A]),
+            case erpc:wait_response(Rid, infinity) of
+                {response, Res} ->
+                    Res;
+                no_response ->
+                    exit(timeout)
+            end
     end.
 
 %% @doc Returns current capacity.

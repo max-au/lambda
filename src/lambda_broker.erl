@@ -3,14 +3,19 @@
 %% Connected to exchanges for which there are outstanding orders
 %%  from any local clients.
 %%
-%% Receives following input:
-%%  * local server makes "sell" order
-%%  * local plb makes "buy" order
-%%  * local server/plb cancels order or terminates
-%%  * remote exchange executes the order (fully or partially)
-%%  * remote authority starts (connects)
-%%  * remote authority updates a list of exchanges for a module
-%%  * remote exchange disconnects
+%% Message exchange protocol:
+%%  * server -> broker: {sell, Module, Seller, Capacity}
+%%  * server -> broker: {'DOWN', ...}
+%%  * plb -> broker: {buy, Module, Buyer, Quantity}
+%%  * broker -> plb: {order, Sellers}
+%%  * plb -> broker: {'DOWN', ...}
+%%  * exchange -> broker: remote exchange executes the order (fully or partially)
+%%  * exchange -> broker: {'DOWN', ...}
+%%  * authority -> broker: remote authority starts (connects)
+%%  * authority -> broker: remote authority updates a list of exchanges for a module
+%%  * broker -> exchange: {sell, ...}, {buy, ...}
+%%  * broker -> authority
+%%
 %% @end
 -module(lambda_broker).
 -author("maximfca@gmail.com").

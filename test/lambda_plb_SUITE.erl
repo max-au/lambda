@@ -99,7 +99,8 @@ make_node(Args, Capacity) ->
     {ok, Bootstrap} = application:get_env(lambda, bootstrap),
     {Peer, Node} = lambda_test:start_node_link(Bootstrap, Args, false),
     %% Peer will connect back to us at some point later, courtesy of lambda_broker and authority
-    {ok, Worker} = peer:apply(Peer, lambda_server, start, [?MODULE, Capacity]),
+    SrvSpec = #{id => lambda_server, start => {lambda_server, start_link, [lambda_broker, ?MODULE, Capacity]}},
+    {ok, Worker} = peer:apply(Peer, supervisor, start_child, [lambda_sup, SrvSpec]),
     unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
     {Node, Peer, Worker, Capacity}.
 
@@ -166,7 +167,7 @@ fail_capacity_wait(Config) when is_list(Config) ->
     Delay = 200,
     %% start both client & server locally (also verifies that it's possible - and there
     %%  are no registered names clashes)
-    {ok, Worker} = lambda_server:start_link(?MODULE, Concurrency),
+    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, Concurrency),
     %% spawn just enough requests to exhaust tokens
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
@@ -197,7 +198,7 @@ call_fail() ->
 
 call_fail(Config) when is_list(Config) ->
     Concurrency = 5,
-    {ok, Worker} = lambda_server:start_link(?MODULE, Concurrency),
+    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, Concurrency),
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, exit, [kill], infinity) end)
         || _ <- lists:seq(1, Concurrency * 5)],
     wait_complete(Spawned),
@@ -209,7 +210,7 @@ packet_loss() ->
 
 packet_loss(Config) when is_list(Config) ->
     Concurrency = 5,
-    {ok, Worker} = lambda_server:start_link(?MODULE, Concurrency),
+    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, Concurrency),
     %% sync broker + plb to ensure it received demand
     Lb = ?config(lb, Config),
     lambda_test:sync_via(Worker, ?config(broker, Config)), %% this flushes broker (order sent to plb)

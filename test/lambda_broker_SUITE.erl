@@ -73,13 +73,13 @@ basic(Config) when is_list(Config) ->
     {ok, AuthPid} = lambda_authority:start_link(?config(boot, Config)),
     %% less special resolver for non-root boot
     {ok, BootPid} = lambda_bootstrap:start_link(#{AuthPid => {epmd, "unused"}}),
-    %% start a number of (unnamed) registries
-    Registries = [unreg(lambda_broker:start_link(BootPid)) || _ <- lists:seq(1, 8)],
-    %% ensure all registries have processed everything. Twice.
-    lambda_test:sync([AuthPid | Registries]),
+    %% start a number of (unnamed) brokers
+    Brokers = [unreg(lambda_broker:start_link(BootPid)) || _ <- lists:seq(1, 8)],
+    %% ensure all brokers have processed everything. Twice.
+    lambda_test:sync([AuthPid | Brokers]),
     %% ensure authority has discovered all of them
-    ?assertEqual(lists:sort(Registries), lists:sort(lambda_authority:registries())),
-    [?assertEqual([AuthPid], lambda_broker:authorities(R)) || R <- Registries],
+    ?assertEqual(lists:sort(Brokers), lists:sort(lambda_authority:brokers())),
+    [?assertEqual([AuthPid], lambda_broker:authorities(R)) || R <- Brokers],
     %% unregister root authority (so we can start another one without name clash)
     erlang:unregister(lambda_authority),
     %% start second authority
@@ -87,17 +87,17 @@ basic(Config) when is_list(Config) ->
     %% let authorities sync. White-box testing here, knowing the protocol.
     lambda_test:sync([AuthPid, Auth2, AuthPid, Auth2]),
     %% ensure both authorities have the same list of connected processes
-    ?assertEqual(lists:sort(gen_server:call(AuthPid, registries)),
-        lists:sort(lambda_authority:registries())),
+    ?assertEqual(lists:sort(gen_server:call(AuthPid, brokers)),
+        lists:sort(lambda_authority:brokers())),
     %% ensure authorities know each other
     ?assertEqual([Auth2], gen_server:call(AuthPid, authorities)),
     ?assertEqual([AuthPid], lambda_authority:authorities()),
-    %% ensure registries know authorities too
-    lambda_test:sync(Registries),
+    %% ensure brokers know authorities too
+    lambda_test:sync(Brokers),
     Auths = lists:sort([AuthPid, Auth2]),
-    [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Registries],
+    [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Brokers],
     %% all done, stop now
-    [gen:stop(Pid) || Pid <- Registries ++ [AuthPid, Auth2, BootPid]].
+    [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2, BootPid]].
 
 
 trade() ->

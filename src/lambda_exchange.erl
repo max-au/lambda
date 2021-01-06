@@ -1,6 +1,9 @@
 %% @doc
 %% Lambda exchange, matching orders from brokers. Started by an authority,
 %%  and linked to authority.
+%% Separated from authority to enable concurrency - an authority is connected
+%%  to thousands of brokers, while exchange will be connected only to a small
+%%  numbers of brokers.
 %%
 %% An exchange serves a single module.
 %%  Exchange orders:
@@ -14,13 +17,18 @@
 %%
 %% Exchange match algorithm considers:
 %%  * capacity
-%%  * failure domains
-%%  * previous allocations
+%%  * failure domains [NOT IMPLEMENTED YET]
+%%  * previous allocations [NOT IMPLEMENTED YET]
 %%
 %% Exchange is started by an authority, if it does not have enough exchanges
 %%  already known. Authority stops locally running exchange if it sorts
 %%  first in the list of all known peer authorities, and has enough other
 %%  exchanges running for this module.
+%%
+%% Exchange message protocol:
+%% * broker -> exchange: buy
+%% * broker -> exchange: sell
+%% * broker -> exchange: {'DOWN', ...}
 %%
 %% @end
 -module(lambda_exchange).
@@ -71,8 +79,13 @@ buy(Exchange, Id, Capacity) ->
     Contact :: {lambda_broker:location(), lambda_epmd:address()}
 }.
 
-%% Buy order
--type buy_order() :: {Broker :: pid(), MRef :: reference(), Id :: non_neg_integer(), Quantity :: pos_integer()}.
+%% Buy order does not need to store contact (seller never contacts buyer)
+-type buy_order() :: {
+    Broker :: pid(),
+    MRef :: reference(),
+    Id :: non_neg_integer(),
+    Quantity :: pos_integer()
+}.
 
 -record(lambda_exchange_state, {
     %% module traded here

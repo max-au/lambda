@@ -1,5 +1,5 @@
 %% @doc
-%%  Lambd: top-level supervisor.
+%%  Lambda: top-level supervisor.
 %%  May start authority, if requested,
 %%      and always starts a broker.
 %% @end
@@ -31,23 +31,24 @@ init([]) ->
             undefined ->
                 {true, undefined}
         end,
-    %%
+    %% authority or not?
     BootSpec =
         #{
             id => lambda_bootstrap,
             start => {lambda_bootstrap, start_link, [Boot]},
             modules => [lambda_bootstrap]
         },
-    AuthoritySpec =
+    AuthoritySpec = [
         #{
             id => lambda_authority,
             start => {lambda_authority, start_link, [lambda_bootstrap]},
             modules => [lambda_authority]
-        },
-    BrokerSpec =
+        } || true <- [Authority]],
+    Children = [
         #{
             id => lambda_broker,
             start => {lambda_broker, start_link, [lambda_bootstrap]},
             modules => [lambda_broker]
-        },
-    {ok, {SupFlags, if Authority -> [BootSpec, AuthoritySpec, BrokerSpec]; true -> [BootSpec, BrokerSpec] end}}.
+        }
+    ],
+    {ok, {SupFlags, [BootSpec] ++ AuthoritySpec ++ Children}}.
