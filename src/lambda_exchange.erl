@@ -76,7 +76,7 @@ buy(Exchange, Id, Capacity) ->
 -type sell_order() :: {
     Quantity :: non_neg_integer(),
     MRef :: reference(),
-    Contact :: {lambda_broker:location(), lambda_epmd:address()}
+    Contact :: {lambda_broker:location(), lambda_discovery:address()}
 }.
 
 %% Buy order does not need to store contact (seller never contacts buyer)

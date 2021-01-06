@@ -45,9 +45,9 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(gen:emgr_name()) -> gen:start_ret().
-start_link(BootProc) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, BootProc, []).
+-spec start_link(lambda:points()) -> gen:start_ret().
+start_link(Peers) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Peers, []).
 
 %% @doc returns list of authorities known to this broker
 -spec authorities(gen:emgr_name()) -> [pid()].
@@ -93,11 +93,11 @@ cancel(Srv, Proc) ->
 
 -record(lambda_broker_state, {
     %% self address (used by authorities)
-    self :: lambda_epmd:address(),
+    self :: lambda_discovery:address(),
     %% bootstrap process informatin
     boot :: gen:emgr_name(),
     %% authority processes + authority addresses to peer discovery
-    authority = #{} :: #{pid() => lambda_epmd:address()},
+    authority = #{} :: #{pid() => lambda_discovery:address()},
     %% exchanges connections
     exchanges = #{} :: #{module() => [pid()]},
     %% next order ID (vector clock for this broker)
@@ -117,14 +117,13 @@ cancel(Srv, Proc) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init(gen:emgr_name()) -> {ok, state()}.
-init(BootProc) ->
-    Bootstrap = lambda_bootstrap:bootstrap(BootProc),
+-spec init(lambda:points()) -> {ok, state()}.
+init(Peers) ->
     %% bootstrap discovery: attempt to find authorities
-    Self = lambda_epmd:get_node(),
+    Self = lambda_discovery:get_node(),
     %% initial discovery
-    discover(Bootstrap, Self),
-    {ok, #lambda_broker_state{self = Self, boot = BootProc}}.
+    discover(Peers, Self),
+    {ok, #lambda_broker_state{self = Self, boot = Peers}}.
 
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
@@ -245,7 +244,7 @@ discover(Points, Self) ->
     maps:map(
         fun (Location, Addr) ->
             ?dbg("~s discovering ~200p of ~300p", [node(), Location, Addr]),
-            lambda_epmd:set_node(Location, Addr),
+            lambda_discovery:set_node(Location, Addr),
             Location ! {discover, self(), Self}
         end, Points).
 

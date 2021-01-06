@@ -170,7 +170,7 @@ capacity(Module) ->
 
 %% -define(DEBUG, true).
 -ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: plb " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
 -define (dbg(Fmt, Arg), ok).
 -endif.
@@ -185,6 +185,7 @@ init({Module, #{low := LW, high := HW} = Options}) ->
              end,
     %% monitor the broker (and reconnect if it restarts)
     erlang:monitor(process, Broker),
+    ?dbg("requesting ~b ~s from ~p", [HW, Module, Broker]),
     %% not planning to cancel the order
     _ = lambda_broker:buy(Broker, Module, HW),
     {ok, #lambda_plb_state{module = Module,

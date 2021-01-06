@@ -26,6 +26,7 @@
 %% * authority -> authority:
 %% * authority -> broker:
 %% * broker -> authority:
+%% * bootstrap -> authority: provide a mapping for bootstrapping
 %%
 %%
 %% @end
@@ -35,8 +36,9 @@
 %% API
 -export([
     start_link/1,
-    authorities/0,
-    brokers/0
+    authorities/1,
+    brokers/1,
+    peers/2
 ]).
 
 -behaviour(gen_server).
@@ -55,21 +57,25 @@
 %% @doc
 %% Starts the server and links it to calling process. Registers a local
 %%  process name.
--spec start_link(gen:emgr_name()) -> gen:start_ret().
-start_link(BootProc) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, BootProc, []).
+-spec start_link(lambda:points()) -> gen:start_ret().
+start_link(Peers) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Peers, []).
 
 %%--------------------------------------------------------------------
 %% API
 
 %% @doc returns a list of authorities currently connected.
-authorities() ->
-    gen_server:call(?MODULE, authorities).
+authorities(Authority) ->
+    gen_server:call(Authority, authorities).
 
 %% @doc returns a list of brokers currently connected to this
 %%      authority.
-brokers() ->
-    gen_server:call(?MODULE, brokers).
+brokers(Authority) ->
+    gen_server:call(Authority, brokers).
+
+%% @doc adds a map of potential authority peers
+peers(Authority, Peers) ->
+    gen_server:cast(Authority, {peers, Peers}).
 
 %%--------------------------------------------------------------------
 %% Cluster authority
@@ -79,16 +85,16 @@ brokers() ->
 
 -record(lambda_authority_state, {
     %% keeping address of "self" cached
-    self :: lambda_epmd:address(),
+    self :: lambda_discovery:address(),
     %% bootstrap process information
     boot :: gen:emgr_name(),
     %% modules known to the authority, mapped to exchanges
     exchanges = #{} :: #{module() => {Local :: pid(), Remote :: [pid()]}},
     %% other authorities. When a new node comes up, it is expected to
     %%  eventually connect to all authorities.
-    authorities = #{} :: #{pid() => lambda_epmd:address()},
+    authorities = #{} :: #{pid() => lambda_discovery:address()},
     %% brokers connected
-    brokers = #{} :: #{pid() => lambda_epmd:address()}
+    brokers = #{} :: #{pid() => lambda_discovery:address()}
 }).
 
 -type state() :: #lambda_authority_state{}.
@@ -100,19 +106,17 @@ brokers() ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init(gen:emgr_name()) -> {ok, state()}.
-init(BootProc) ->
-    Authorities = lambda_bootstrap:bootstrap(BootProc),
-    %% bootstrap discovery. Race condition possible, when all nodes
-    %%  start at once, and never retry.
-    Self = lambda_epmd:get_node(),
+-spec init(lambda:points()) -> {ok, state()}.
+init(Peers) ->
+    %% attempt to discover initial set of authorities
+    Self = lambda_discovery:get_node(),
     maps:map(
         fun (Location, Addr) ->
-            ok = lambda_epmd:set_node(Location, Addr),
+            ok = lambda_discovery:set_node(Location, Addr),
             Location ! {authority, self(), Self}
-        end, Authorities),
-    ?dbg("init: discovering ~200p", [Authorities]),
-    {ok, #lambda_authority_state{self = Self, boot = BootProc}}.
+        end, Peers),
+    ?dbg("init: discovering ~200p", [Peers]),
+    {ok, #lambda_authority_state{self = Self, boot = Peers}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
@@ -120,8 +124,9 @@ handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = St
 handle_call(brokers, _From, #lambda_authority_state{brokers = Brokers} = State) ->
     {reply, maps:keys(Brokers), State}.
 
-handle_cast(_Cast, _State) ->
-    error(notsup).
+handle_cast({peers, _Peers}, #lambda_authority_state{} = State) ->
+    ?dbg("init: adding peers: ~200p", [_Peers]),
+    {noreply, State}.
 
 %% Broker requesting exchanges for a Module
 handle_info({exchange, Module, Broker}, #lambda_authority_state{} = State) ->
@@ -175,7 +180,7 @@ handle_info({quorum, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, a
         fun (Reg, _Addr, ExReg) when is_map_key(Reg, ExReg) ->
                 ExReg;
             (Reg, Addr, ExReg) ->
-                lambda_epmd:set_node(node(Reg), Addr), %% TODO: may need some overload protection for mass exchange
+                lambda_discovery:set_node(node(Reg), Addr), %% TODO: may need some overload protection for mass exchange
                 _MRef = erlang:monitor(process, Reg),
                 %% don't suspend the authority to avoid lock-up when dist connection busy
                 %% TODO: figure out how dist can be busy when we have never sent anything before
@@ -219,14 +224,14 @@ ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->
             {[New], State#lambda_authority_state{exchanges = Exch#{Module => {New, []}}}}
     end.
 
-peer_addr({ip, Addr, Port}) ->
-    {ip, Addr, Port};
-peer_addr({epmd, Hostname}) ->
-    {epmd, Hostname};
+peer_addr({Addr, Port}) when is_tuple(Addr), is_integer(Port), Port > 0, Port < 65536 ->
+    {Addr, Port};
 peer_addr({Node, Port}) when is_atom(Node), is_integer(Port), Port > 0, Port < 65536 ->
     Socket = ets:lookup_element(sys_dist, Node, 6),
     {ok, {Ip, _EphemeralPort}} = inet:peername(Socket), %% TODO: TLS support
     case Ip of
-        V4 when tuple_size(V4) =:= 4 -> {inet, Ip, Port};
-        V6 when tuple_size(V6) =:= 8 -> {inet6, Ip, Port}
-    end.
+        V4 when tuple_size(V4) =:= 4 -> {Ip, Port};
+        V6 when tuple_size(V6) =:= 8 -> {Ip, Port}
+    end;
+peer_addr(not_distributed) ->
+    not_distributed.

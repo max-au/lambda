@@ -51,24 +51,16 @@ sync_via(Via, Pid) ->
 %%      epmd replaced. Node is made distributed
 -spec start_local() -> ok.
 start_local() ->
-    _Physical = lambda_epmd:replace(),
-    try
-        %% need to be alive. Using shortnames - this way it works
-        %%  even when there is no network connection
-        erlang:is_alive() orelse net_kernel:start([?MODULE, shortnames]),
-        %% configuration: local authority
-        ok = application:load(lambda),
-        %% "self-signed": node runs both authority and a broker
-        ok = application:set_env(lambda, authority, true),
-        ok = application:set_env(lambda, bootstrap, #{{lambda_authority, node()} => lambda_epmd:get_node(node())}),
-        %% lambda application. it does not have any dependencies, so should "just start".
-        %% Note: this is deliberate decision, don't just change to "ensure_all_started".
-        ok = application:start(lambda)
-    catch
-        Class:Reason:Stack ->
-            lambda_epmd:restore(),
-            erlang:raise(Class, Reason, Stack)
-    end.
+    %% need to be alive. Using shortnames - this way it works
+    %%  even when there is no network connection
+    erlang:is_alive() orelse net_kernel:start([list_to_atom(lists:concat([?MODULE, "_", os:getpid()])), shortnames]),
+    %% configuration: local authority
+    ok = application:load(lambda),
+    %% "self-signed": node runs both authority and a broker
+    ok = application:set_env(lambda, authority, true),
+    %% lambda application. it does not have any dependencies, so should "just start".
+    %% Note: this is deliberate decision, don't just change to "ensure_all_started".
+    ok = application:start(lambda).
 
 %% @doc Ends locally running lambda, restores epmd, unloads lambda app,
 %%      makes node non-distributed if it was allegedly started by us.
@@ -76,8 +68,7 @@ start_local() ->
 end_local() ->
     ok = application:stop(lambda),
     ok = application:unload(lambda),
-    hd(string:lexemes(atom_to_list(node()), "@")) =:= ?MODULE_STRING andalso net_kernel:stop(),
-    true = lambda_epmd:restore(),
+    lists:prefix(?MODULE_STRING, atom_to_list(node())) andalso net_kernel:stop(),
     ok.
 
 %% @doc Starts an extra node with specified bootstrap, no authority and default command line.
@@ -93,17 +84,16 @@ start_node_link(Bootstrap, CmdLine, Authority) ->
     CP = code:lib_dir(lambda, ebin),
     TestCP = filename:dirname(code:which(?MODULE)),
     Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
+    Boot = if Bootstrap =/= undefined -> ["-lambda", "bootstrap", lists:flatten(io_lib:format("~10000tp", [Bootstrap]))]; true -> [] end,
     {ok, Peer} = peer:start_link(#{node => Node, connection => standard_io,
         args => [
             %% "-kernel", "dist_auto_connect", "never",
             "-start_epmd", "false",
-            "-epmd_module", "lambda_epmd",
+            "-epmd_module", "lambda_discovery",
             %"-kernel", "logger", "[{handler, default, logger_std_h,#{config => #{type => standard_error}, formatter => {logger_formatter, #{ }}}}]",
             %"-kernel", "logger_level", "all",
-            "-pa", CP, "-pa", TestCP] ++ Auth ++ CmdLine}),
-    Bootstrap =/= undefined andalso
-        peer:apply(Peer, application, set_env, [lambda, bootstrap, Bootstrap, [{persistent, true}]]),
-    {ok, _Apps} = peer:apply(Peer, application, ensure_all_started, [lambda]),
+            "-pa", CP, "-pa", TestCP] ++ Auth ++ Boot ++ CmdLine}),
+    ok = peer:apply(Peer, application, start, [lambda]),
     is_map(Bootstrap) andalso
         begin
             {_, BootNodes} = lists:unzip(maps:keys(Bootstrap)),

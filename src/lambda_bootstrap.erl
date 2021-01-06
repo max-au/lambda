@@ -1,7 +1,10 @@
 %% @doc
-%% WARNING: this implementation is inferior, and is mostly depicts
-%%  "no design" approach. It is expected to be rewritten, probably
-%%  several times.
+%% WARNING: this is only the second iteration of bootstrap design,
+%%  so it's likely to change in the future.
+%%
+%% Bootstrap is a way to find initial list of authorities to
+%%  connect to. More authorities will be discovered when at least
+%%  one is connected.
 %%
 %% Lambda bootstrap, implementing a number of default strategies,
 %%  or a custom callback to fetch bootstrap information. Bootstrap
@@ -22,8 +25,7 @@
     subscribe/0,
     subscribe/2,
     unsubscribe/0,
-    unsubscribe/1,
-    bootstrap/1
+    unsubscribe/1
 ]).
 
 -behaviour(gen_server).
@@ -66,7 +68,7 @@ start_link(Bootspec) ->
 subscribe() ->
     subscribe(?MODULE, temporary).
 
--spec subscribe(gen:emgr_name(), Temporary :: temporary | permanent) -> lambda_broker:points().
+-spec subscribe(gen:emgr_name(), Temporary :: temporary | permanent) -> ok.
 subscribe(Dest, Temporary) ->
     gen_server:cast(Dest, {subscribe, self(), Temporary}).
 
@@ -79,20 +81,12 @@ unsubscribe() ->
 unsubscribe(Dest) ->
     gen_server:cast(Dest, {unsubscribe, self()}).
 
-%% @doc Helper function for initial startup purposes.
-%%      Returns already known bootstrap, or blocks until
-%%      there is at least a single successful attempt.
-%%      If boot spec is empty, then the node is the root authority,
-%%      and bootstrap will return an empty map as well.
-bootstrap(Dest) ->
-    gen_server:call(Dest, bootstrap).
-
 %%--------------------------------------------------------------------
 %% gen_server implementation
 
 -record(lambda_bootstrap_state, {
     timer :: undefined | reference(),
-    %% subscribers: temporary, permanent or boot-only (reference)
+    %% subscribers: temporary or permanent
     subscribers = #{} :: #{pid() => temporary | permanent},
     %% last resolved bootstrap (if any)
     bootstrap :: undefined | lambda_broker:points(),
@@ -119,8 +113,8 @@ init(Bootspec) ->
 handle_continue(init, State) ->
     {noreply, handle_resolve(State)}.
 
-handle_call(bootstrap, _From, #lambda_bootstrap_state{bootstrap = Boot} = State) ->
-    {reply, Boot, State}.
+handle_call(_Req, _From, _State) ->
+    erlang:error(notsup).
 
 handle_cast({subscribe, From, Temp}, #lambda_bootstrap_state{timer = undefined}) ->
     TRef = erlang:send_after(?LAMBDA_BOOTSTRAP_RETRY_TIME, self(), resolve),

@@ -33,34 +33,31 @@ groups() ->
     [{local, [basic, trade]}, {cluster, [peer]}].
 
 init_per_group(local, Config) ->
-    Addr = {epmd, "unused"}, %% use fake address for non-distributed node
     %% start discovery
-    {ok, Disco} = lambda_epmd:start_link(),
-    ok = lambda_epmd:set_node(node(), Addr),
+    {ok, Disco} = lambda_discovery:start_link(),
     unlink(Disco),
-    %% special resolver for boot
-    {ok, RootBoot} = lambda_bootstrap:start_link(undefined),
-    unlink(RootBoot),
-    erlang:unregister(lambda_bootstrap),
-    [{disco, Disco}, {boot, RootBoot} | Config];
+    [{disco, Disco} | Config];
 init_per_group(_Group, Config) ->
     Config.
 
 end_per_group(local, Config) ->
-    gen_server:stop(?config(boot, Config)),
     gen_server:stop(?config(disco, Config)),
-    proplists:delete(disco, proplists:delete(boot, Config));
+    proplists:delete(disco, Config);
 end_per_group(_Group, Config) ->
     Config.
 
 %%--------------------------------------------------------------------
 %% Convenience
 
-unreg({ok, Pid}) ->
-    %% should not be needed when there is one broker per node,
-    %%  but to simulate many nodes in one, this is quite helpful
-    erlang:unregister(lambda_broker),
-    Pid.
+%% Starts an authority, and returns bootstrap to start the rest
+%%  of the system.
+start_authority(Peers) ->
+    {ok, AuthPid} = gen_server:start_link(lambda_authority, Peers, []),
+    {AuthPid, #{AuthPid => lambda_discovery:get_node()}}.
+
+start_broker(Auth) ->
+    {ok, BrokerPid} = gen_server:start_link(lambda_broker, Auth, []),
+    BrokerPid.
 
 %%--------------------------------------------------------------------
 %% Test Cases
@@ -70,34 +67,30 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     %% start root (empty) authority
-    {ok, AuthPid} = lambda_authority:start_link(?config(boot, Config)),
-    %% less special resolver for non-root boot
-    {ok, BootPid} = lambda_bootstrap:start_link(#{AuthPid => {epmd, "unused"}}),
-    %% start a number of (unnamed) brokers
-    Brokers = [unreg(lambda_broker:start_link(BootPid)) || _ <- lists:seq(1, 8)],
+    {AuthPid, Bootstrap} = start_authority(#{}),
+    %% start a number of (unnamed) brokers pointing at authority
+    Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 8)],
     %% ensure all brokers have processed everything. Twice.
     lambda_test:sync([AuthPid | Brokers]),
     %% ensure authority has discovered all of them
-    ?assertEqual(lists:sort(Brokers), lists:sort(lambda_authority:brokers())),
+    ?assertEqual(lists:sort(Brokers), lists:sort(lambda_authority:brokers(AuthPid))),
     [?assertEqual([AuthPid], lambda_broker:authorities(R)) || R <- Brokers],
-    %% unregister root authority (so we can start another one without name clash)
-    erlang:unregister(lambda_authority),
     %% start second authority
-    {ok, Auth2} = lambda_authority:start_link(BootPid),
+    {Auth2, _} = start_authority(Bootstrap),
     %% let authorities sync. White-box testing here, knowing the protocol.
     lambda_test:sync([AuthPid, Auth2, AuthPid, Auth2]),
     %% ensure both authorities have the same list of connected processes
-    ?assertEqual(lists:sort(gen_server:call(AuthPid, brokers)),
-        lists:sort(lambda_authority:brokers())),
+    ?assertEqual(lists:sort(lambda_authority:brokers(AuthPid)),
+        lists:sort(lambda_authority:brokers(Auth2))),
     %% ensure authorities know each other
-    ?assertEqual([Auth2], gen_server:call(AuthPid, authorities)),
-    ?assertEqual([AuthPid], lambda_authority:authorities()),
+    ?assertEqual([Auth2], lambda_authority:authorities(AuthPid)),
+    ?assertEqual([AuthPid], lambda_authority:authorities(Auth2)),
     %% ensure brokers know authorities too
     lambda_test:sync(Brokers),
     Auths = lists:sort([AuthPid, Auth2]),
     [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Brokers],
     %% all done, stop now
-    [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2, BootPid]].
+    [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2]].
 
 
 trade() ->
@@ -106,10 +99,8 @@ trade() ->
 trade(Config) when is_list(Config) ->
     Quantity = 100,
     %% start a broker with a single authority
-    {ok, AuthPid} = lambda_authority:start_link(?config(boot, Config)),
-    {ok, BootPid} = lambda_bootstrap:start_link(#{AuthPid => {epmd, "unused"}}),
-    {ok, Reg} = lambda_broker:start_link(BootPid),
-    erlang:unregister(lambda_broker),
+    {AuthPid, Bootstrap} = start_authority(#{}),
+    Reg = start_broker(Bootstrap),
     %% spawned process sells 100 through the broker
     Seller = spawn(
         fun () -> lambda_broker:sell(Reg, ?FUNCTION_NAME, Quantity), receive after infinity -> ok end end),
@@ -124,7 +115,7 @@ trade(Config) when is_list(Config) ->
     end,
     %% exit the seller
     exit(Seller, normal),
-    [gen_server:stop(P) || P <- [Reg, AuthPid, BootPid]].
+    [gen_server:stop(P) || P <- [Reg, AuthPid]].
 
 %%--------------------------------------------------------------------
 %% Real Cluster Test Cases
@@ -138,7 +129,7 @@ peer(Config) when is_list(Config) ->
     %% start first authority node, as we need to make a bootstrap of it
     {AuthorityPeer, AuthorityNode} = lambda_test:start_node_link(undefined, [], true),
     %% form the bootstrap
-    Addr = peer:apply(AuthorityPeer, lambda_epmd, get_node, []),
+    Addr = peer:apply(AuthorityPeer, lambda_discovery, get_node, []),
     Bootstrap = #{{lambda_authority, AuthorityNode} => Addr},
     %% start extra nodes
     Peers = lambda_test:start_nodes(Bootstrap, 4),

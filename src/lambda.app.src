@@ -1,17 +1,17 @@
 {application, lambda,
  [{description, "Lambda: local function made remote"},
   {vsn, "0.1.0"},
-  {registered, [lambda_sup, lambda_bootstrap, lambda_authority, lambda_broker, lambda_epmd]},
+  {registered, [lambda_sup, lambda_bootstrap, lambda_authority, lambda_broker, lambda_discovery]},
   {mod, {lambda_app, []}},
   {applications,
    [kernel,
     stdlib
    ]},
   {env,[
-   %% {bootstrap, undefined}, %% see lambda_bootstrap:bootspec()
-   %% {authority, bootstrap =:= undefined} %% when bootstrap is not defined,
-   %% lambda starts in root authority mode. Otherwise, {authority, true}
-   %% tells the app to start authority
+   %% {authority, false},
+   %% {broker, true},
+   %% {bootstrap, ...} %% see lambda:points(), empty by default
+   %% {bootspec, ...} %% see lambda_bootstrap:bootspec() type
   ]},
 
   {licenses, ["BSD 3-clause clear"]},

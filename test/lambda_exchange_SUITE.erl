@@ -29,19 +29,16 @@ all() ->
     [basic].
 
 init_per_suite(Config) ->
-    {ok, Physical} = lambda_epmd:start_link(),
+    {ok, Physical} = lambda_discovery:start_link(),
     erlang:unlink(Physical),
-    {ok, BootPid} = lambda_bootstrap:start_link(undefined),
-    erlang:unlink(BootPid),
-    {ok, Broker} = lambda_broker:start_link(BootPid),
+    {ok, Broker} = lambda_broker:start_link(#{}),
     erlang:unlink(Broker),
-    [{boot, BootPid}, {broker, Broker}, {physical, Physical} | Config].
+    [{broker, Broker}, {physical, Physical} | Config].
 
 end_per_suite(Config) ->
     gen_server:stop(?config(broker, Config)),
     gen_server:stop(?config(physical, Config)),
-    gen_server:stop(?config(boot, Config)),
-    proplists:delete(boot, proplists:delete(broker, proplists:delete(physical, Config))).
+    proplists:delete(broker, proplists:delete(physical, Config)).
 
 init_per_testcase(TestCase, Config) ->
     {ok, Pid} = lambda_exchange:start_link(TestCase),

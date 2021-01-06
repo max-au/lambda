@@ -3,13 +3,11 @@
 %%  into Erlang distribution.
 %% Implements a simple mapping, exposed via EPMD API.
 %% @end
--module(lambda_epmd).
+-module(lambda_discovery).
 -author("maximfca@gmail.com").
 
 %% API
 -export([
-    replace/0,
-    restore/0,
     set_node/2,
     del_node/1,
     get_node/1,
@@ -31,65 +29,25 @@
 -export([
     init/1,
     handle_call/3,
-    handle_cast/2
+    handle_cast/2,
+    terminate/2
 ]).
 
 -behaviour(gen_server).
 
 -include_lib("kernel/include/inet.hrl").
 
-%%--------------------------------------------------------------------
-%% @doc Test/debug only: replaces running erl_epmd. Should only be used
-%%      for cases when it is not possible to control command line, so
-%%      -epmd_module argument cannot be overridden.
--spec replace() -> pid().
-replace() ->
-    %% if erl_epmd is already running, start the additional server (runs separately from erl_epmd)
-    Pid = case whereis(erl_epmd) of
-              undefined ->
-                  undefined;
-              Pid1 when is_pid(Pid1) ->
-                  {ok, Pid2} = gen_server:start({local, ?MODULE}, ?MODULE, [], []),
-                  Pid2
-          end,
-    %% ALERT: Code below is doing a dirty trick:
-    %%  reload binary code for this module renamed to "erl_epmd"
-    EpmdMod = erl_epmd,
-    {Mod, Binary, _Filename} = code:get_object_code(?MODULE),
-    {ok, {Mod, [{abstract_code, {_, Forms}}]}} = beam_lib:chunks(Binary, [abstract_code]),
-    Expanded = erl_expand_records:module(Forms, [strict_record_tests]),
-    Replaced = [
-        case Form of
-            {attribute, Ln, module, ?MODULE} ->
-                {attribute, Ln, module, EpmdMod};
-            Other ->
-                Other
-        end || Form <- Expanded],
-    {ok, EpmdMod, Bin} = compile:forms(Replaced),
-    true = code:unstick_mod(EpmdMod),
-    {module, EpmdMod} = code:load_binary(EpmdMod, code:which(EpmdMod), Bin),
-    false = code:purge(EpmdMod),
-    Pid.
-
-%%--------------------------------------------------------------------
-%% @doc Test/debug only: restores erl_epmd previously running to revert
-%%      previous 'replace' operation
--spec restore() -> true.
-restore() ->
-    %% if this server is running, stop it
-    is_pid(whereis(?MODULE)) andalso gen_server:stop(?MODULE),
-    %% ALERT: Code below is for recovering after hacky replace()
-    BeamFile = filename:join(code:lib_dir(kernel, ebin), "erl_epmd"),
-    {module, erl_epmd} = code:load_abs(BeamFile, erl_epmd),
-    true = code:stick_mod(erl_epmd).
-
-
 %% @doc
 %% Starts the server and links it to calling process. Required for
 %%  epmd interface.
 -spec start_link() -> {ok, pid()} | ignore | {error,term()}.
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    case is_replaced() of
+        true ->
+            ignore;
+        false ->
+            gen_server:start_link({local, ?MODULE}, ?MODULE, [], [])
+    end.
 
 %% @doc Sets the mapping between node name and address to access the node.
 -spec set_node(node() | pid(), lambda:address()) -> ok.
@@ -97,10 +55,10 @@ set_node(Pid, Address) when is_pid(Pid) ->
     set_node(node(Pid), Address);
 set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
     set_node(Node, Address);
-set_node(Node, {ip, _Ip, _Port} = Address) ->
+set_node(Node, {_Ip, _Port} = Address) ->
     gen_server:call(?MODULE, {set, Node, Address});
-set_node(Node, {epmd, Hostname} = Address) when is_list(Hostname) ->
-    gen_server:call(?MODULE, {set, Node, Address}).
+set_node(Node, not_distributed) when Node =:= node() ->
+    ok.
 
 %% @doc Removes the node name from the map. Does nothing if node was never added.
 -spec del_node(node()) -> ok.
@@ -190,9 +148,9 @@ listen_port_please(_Name, _Host) ->
 
 address_please(Name, Host, AddressFamily) ->
     case get_node(make_node(Name, Host)) of
-        {ip, Addr, Port} when AddressFamily =:= inet, tuple_size(Addr) =:= 4 ->
+        {Addr, Port} when AddressFamily =:= inet, tuple_size(Addr) =:= 4 ->
             {ok, Addr, Port, ?EPMD_VERSION};
-        {ip, Addr, Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
+        {Addr, Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
             {ok, Addr, Port, ?EPMD_VERSION};
         error ->
             {error, not_found}
@@ -201,23 +159,64 @@ address_please(Name, Host, AddressFamily) ->
 %%--------------------------------------------------------------------
 %% Server implementation
 
-%% EPMD state: maps node names to addresses.
+%% -define(DEBUG, true).
+-ifdef (DEBUG).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: discovery " ++ Fmt ++ "~n", [node(), self() | Arg])).
+-else.
+-define (dbg(Fmt, Arg), ok).
+-endif.
+
+%% Discovery state: maps node names to addresses.
 %% Current limitation: a node can only have a single address,
 %%  either IPv4 or IPv6.
 -type state() :: #{node() => lambda:address()}.
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    {ok, #{}}.
+    is_replaced() orelse
+        begin
+            %% Replace erl_epmd code on the fly
+            %%  to redirect existing calls. Should only be used for cases when it is
+            %%  not possible to control -epmd_module command line argument.
+            {Mod, Binary, _Filename} = code:get_object_code(?MODULE),
+            {ok, {Mod, [{abstract_code, {_, Forms}}]}} = beam_lib:chunks(Binary, [abstract_code]),
+            Expanded = erl_expand_records:module(Forms, [strict_record_tests]),
+            Replaced = [
+                case Form of
+                    {attribute, Ln, module, ?MODULE} ->
+                        {attribute, Ln, module, erl_epmd};
+                    Other ->
+                        Other
+                end || Form <- Expanded],
+            {ok, erl_epmd, Bin} = compile:forms(Replaced),
+            true = code:unstick_mod(erl_epmd),
+            {module, erl_epmd} = code:load_binary(erl_epmd, code:which(?MODULE), Bin),
+            true = code:stick_mod(erl_epmd),
+            false = code:purge(erl_epmd)
+        end,
+    %% need to trap exit for terminate/2 to be called
+    erlang:process_flag(trap_exit, true),
+    %% always populate the local node address
+    try
+        {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
+            [{listen, _Port, _Proc, {net_address, {_Ip, Port}, HostName, _Proto, Fam}, _Mod}],
+            _, _, _, _, _} = sys:get_state(net_kernel),
+        {ok, #{node() => {local_addr(HostName, Fam), Port}}}
+    catch
+        _:_ ->
+            {ok, #{node() => not_distributed}}
+    end.
 
 handle_call({set, Node, Address}, _From, State) ->
+    ?dbg("set ~s to ~200p", [Node, Address]),
     {reply, ok, State#{Node => Address}};
 
 handle_call({del, Node}, _From, State) ->
     {reply, ok, maps:remove(Node, State)};
 
 handle_call({get, Node}, _From, State) ->
-    {reply, case maps:find(Node, State) of {ok, Ret} -> Ret; error -> error end, State};
+    ?dbg("asking for ~s (~200p)", [case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, State, error)]),
+    {reply, maps:get(Node, State, error), State};
 
 handle_call({names, HostName}, _From, State) ->
     %% find all Nodes of a HostName - need to iterate the entire node
@@ -229,35 +228,55 @@ handle_call({register, Name, PortNo, Family}, _From, State) ->
     %% get the local hostname
     {ok, Host} = inet:gethostname(),
     Domain = case inet_db:res_option(domain) of [] -> []; D -> [$. | D] end,
-    Node = make_node(Name, Host ++ Domain),
-    Addr =
-        case application:get_env(kernel, inet_dist_use_interface) of
-            {ok, Addr1} when Family =:= inet, tuple_size(Addr1) =:= 4 ->
-                Addr1;
-            {ok, Addr1} when Family =:= inet6, tuple_size(Addr1) =:= 8 ->
-                Addr1;
-            undefined ->
-                %% attempt to guess external IP address:
-                %% {ok, Ifs} = inet:getifaddrs(),
-                %% LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
-                %% Local = [Valid || Valid <- LocalUp, is_list(inet:ntoa(Valid))],
-                %% native resolver cannot be used, so use one written in pure Erlang
-                case inet_res:gethostbyname(Host, Family) of
-                    {ok, #hostent{h_addr_list = Addrs}} ->
-                        hd(Addrs);
-                    {error, nxdomain} ->
-                        %% TODO: better fallback. Testing of this branch requires non-connected laptop,
-                        %%  and I'm developing this while on a plane
-                        {127, 0, 0, 1} %% fallback to localhost as default
-                end
-        end,
-    {reply, {ok, 1}, State#{Node => {ip, Addr, PortNo}}}.
+    Long = make_node(Name, Host ++ Domain),
+    Short = make_node(Name, Host),
+    Addr = local_addr(Host, Family),
+    %% register both short and long names
+    {reply, {ok, 1}, State#{Long => {Addr, PortNo}, Short => {Addr, PortNo}}}.
 
 handle_cast(_Cast, _State) ->
     error(badarg).
 
+terminate(_Reason, _State) ->
+    %% if erl_epmd code was replaced, get old code back
+    is_replaced() andalso
+        begin
+            BeamFile = filename:join(code:lib_dir(kernel, ebin), "erl_epmd"),
+            true = code:unstick_mod(erl_epmd),
+            {module, erl_epmd} = code:load_abs(BeamFile, erl_epmd),
+            %% we're still running old code (this code!), so can't purge
+            %%  effectively
+            true = code:stick_mod(erl_epmd)
+        end.
+
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+is_replaced() ->
+    Kernel = code:lib_dir(kernel, ebin),
+    filename:dirname(code:which(erl_epmd)) =/= Kernel.
+
+local_addr(Host, Family) ->
+    case application:get_env(kernel, inet_dist_use_interface) of
+        {ok, Addr1} when Family =:= inet, tuple_size(Addr1) =:= 4 ->
+            Addr1;
+        {ok, Addr1} when Family =:= inet6, tuple_size(Addr1) =:= 8 ->
+            Addr1;
+        undefined ->
+            %% attempt to guess external IP address:
+            %% {ok, Ifs} = inet:getifaddrs(),
+            %% LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
+            %% Local = [Valid || Valid <- LocalUp, is_list(inet:ntoa(Valid))],
+            %% native resolver cannot be used, so use one written in pure Erlang
+            case inet_res:gethostbyname(Host, Family) of
+                {ok, #hostent{h_addr_list = Addrs}} ->
+                    hd(Addrs);
+                {error, nxdomain} ->
+                    %% TODO: better fallback. Testing of this branch requires non-connected laptop,
+                    %%  and I'm developing this while on a plane
+                    {127, 0, 0, 1} %% fallback to localhost as default
+            end
+    end.
 
 make_node(Name, Host) ->
     list_to_atom(lists:concat([Name, "@", Host])).

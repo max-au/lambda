@@ -96,7 +96,7 @@ multi_echo(Count) ->
     multi_echo(Count - 1).
 
 make_node(Args, Capacity) ->
-    {ok, Bootstrap} = application:get_env(lambda, bootstrap),
+    Bootstrap = #{{lambda_authority, node()} => lambda_discovery:get_node()},
     {Peer, Node} = lambda_test:start_node_link(Bootstrap, Args, false),
     %% Peer will connect back to us at some point later, courtesy of lambda_broker and authority
     SrvSpec = #{id => lambda_server, start => {lambda_server, start_link, [lambda_broker, ?MODULE, Capacity]}},
