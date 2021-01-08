@@ -14,10 +14,8 @@
 
 %% API
 -export([
-    start/1,
-    start/2,
-    start_link/1,
     start_link/2,
+    start_link/3,
 
     cast/4,
     call/4,
@@ -53,29 +51,18 @@
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts the server outside of supervision hierarchy.
-%% Registers local process to make it discoverable by emerging servers.
+%% Starts the server and links it to calling process.
 %% Uses default watermark settings, which is 1 for low watermark, and
 %%  1000 for high.
--spec start(module()) -> gen:start_ret().
-start(Module) when is_atom(Module) ->
-    start(Module, #{low => 10, high => 1000}).
-
--spec start(module(), options()) -> gen:start_ret().
-start(Module, Options) ->
-    gen_server:start({local, Module}, ?MODULE, {Module, Options}, []).
+-spec start_link(gen:emgr_name(), module()) -> gen:start_ret().
+start_link(Broker, Module) when is_atom(Module) ->
+    start_link(Broker, Module, #{low => 10, high => 1000}).
 
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(module()) -> gen:start_ret().
-start_link(Module) when is_atom(Module) ->
-    start_link(Module, #{low => 10, high => 1000}).
-
-%% @doc
-%% Starts the server and links it to calling process.
--spec start_link(module(), options()) -> gen:start_ret().
-start_link(Module, Options) when is_atom(Module) ->
-    gen_server:start_link({local, Module}, ?MODULE, {Module, Options}, []).
+-spec start_link(gen:emgr_name(), module(), options()) -> gen:start_ret().
+start_link(Broker, Module, Options) when is_atom(Module) ->
+    gen_server:start_link({local, Module}, ?MODULE, {Broker, Module, Options}, []).
 
 %%--------------------------------------------------------------------
 %% API
@@ -163,7 +150,7 @@ capacity(Module) ->
     %% queue: process that accepts 'wait' requests
     queue :: pid(),
     %% local broker, monitored for failover purposes
-    broker :: pid()
+    broker :: gen:emgr_name()
 }).
 
 -type state() :: #lambda_plb_state{}.
@@ -176,13 +163,9 @@ capacity(Module) ->
 -endif.
 
 -spec init({Module :: atom(), Options :: options()}) -> {ok, state()}.
-init({Module, #{low := LW, high := HW} = Options}) ->
+init({Broker, Module, #{low := LW, high := HW} = Options}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
-    Broker = case maps:get(broker, Options, lambda_broker) of
-                 Pid when is_pid(Pid) -> Pid;
-                 Name when is_atom(Name) -> whereis(Name)
-             end,
     %% monitor the broker (and reconnect if it restarts)
     erlang:monitor(process, Broker),
     ?dbg("requesting ~b ~s from ~p", [HW, Module, Broker]),
