@@ -163,7 +163,7 @@ capacity(Module) ->
 -endif.
 
 -spec init({Module :: atom(), Options :: options()}) -> {ok, state()}.
-init({Broker, Module, #{low := LW, high := HW} = Options}) ->
+init({Broker, Module, #{low := LW, high := HW}}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
     %% monitor the broker (and reconnect if it restarts)

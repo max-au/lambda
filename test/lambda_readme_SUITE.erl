@@ -28,8 +28,18 @@ all() ->
 %% Test Cases
 
 basic() ->
-    [{doc, "Basic test starting extra node and sending lambda there"}].
+    [{doc, "Basic test starting extra node, publishing/discovering lambda and running it remotely"}].
 
 basic(Config) when is_list(Config) ->
-    %%
-    ok.
+    %% Server: publish calc
+    {ok, Server} = peer:start_link(#{connection => standard_io}),
+    ok = peer:apply(Server, application, start, [lambda]),
+    {ok, _Srv} = peer:apply(Server, lambda, publish, [calc]),
+    %% Client: discover calc
+    {ok, Client} = peer:start_link(#{connection => standard_io}),
+    ok = peer:apply(Client, application, start, [lambda]),
+    {ok, _Plb} = peer:apply(Client, lambda, discover, [calc]),
+    %% Execute calc remotely (on the client)
+    ?assertEqual(3.14, peer:apply(Client, calc, pi, [2])),
+    %% Shutdown
+    peer:stop(Server).

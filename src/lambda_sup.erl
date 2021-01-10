@@ -29,6 +29,14 @@ init([]) ->
     Broker = application:get_env(App, broker, true),
     %% initial (static) bootstrap
     Boot = application:get_env(App, bootstrap, #{}),
+    %% Lambda discovery (epmd module, may be already used/installed via command line)
+    DiscoSpec = [
+        #{
+            id => lambda_discovery,
+            start => {lambda_discovery, start_link, []},
+            modules => [lambda_discovery]
+        }
+    ],
     %% Authority, when enabled
     AuthoritySpec = [
         #{
@@ -55,12 +63,46 @@ init([]) ->
             start => {lambda_bootstrap, start_link, [Boot]},
             modules => [lambda_bootstrap]
         } || Dyn <- [DynBoot], Dyn =/= undefined],
-    %% Lambda discovery (epmd module, may be already used/installed via command line)
-    DiscoSpec = [
+
+    %% Supervisors for statically published server/plb modules
+    %% take children list from configuration (hosted deployment)
+    Publish = [check_server_mod(Mod) || Mod <- application:get_env(App, publish, [])],
+    Discover = [check_plb_mod(Mod) || Mod <- application:get_env(App, discover, [])],
+    ModSup = [
         #{
-            id => lambda_discovery,
-            start => {lambda_discovery, start_link, []},
-            modules => [lambda_discovery]
+            id => lambda_server_sup,
+            start => {lambda_server_sup, start_link, [Publish]},
+            type => supervisor,
+            modules => [lambda_server_sup]
+        },
+        #{
+            id => lambda_plb_sup,
+            start => {lambda_plb_sup, start_link, [Discover]},
+            type => supervisor,
+            modules => [lambda_plb_sup]
         }
     ],
-    {ok, {SupFlags, DiscoSpec ++ AuthoritySpec ++ BrokerSpec ++ BootSpec}}.
+    {ok, {SupFlags, lists:concat([DiscoSpec, AuthoritySpec, BrokerSpec, BootSpec, ModSup])}}.
+
+
+%%--------------------------------------------------------------------
+%% Internal implementation
+
+check_server_mod(Mod) when is_atom(Mod) ->
+    %% by default, set the concurrency as 2x of schedulers
+    %%  available.
+    Sched = erlang:system_info(schedulers),
+    {Mod, #{capacity => Sched * 2}};
+check_server_mod({Mod, Options}) when is_atom(Mod), is_map(Options) ->
+    {Mod, Options};
+check_server_mod(Other) ->
+    erlang:error({invalid_module_spec, Other}).
+
+check_plb_mod(Mod) when is_atom(Mod) ->
+    %% should use dynamic (determined in runtime) as default,
+    %%  but this mode is not ready yet
+    {Mod, #{high => 10}};
+check_plb_mod({Mod, Options}) when is_atom(Mod), is_map(Options) ->
+    {Mod, Options};
+check_plb_mod(Other) ->
+    erlang:error({invalid_module_spec, Other}).

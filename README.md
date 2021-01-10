@@ -37,7 +37,13 @@ Start another shell, `rebar3 shell --sname front`, discover `calc` and execute `
     6765.
     ok
 ```
-
+To verify that `back` node was processing the call, add side effect, and recompile:
+```
+    fib(1) -> io:format("Side effect~n"), 1;
+...
+    (back@max-au)1> c("/tmp/calc.erl").
+    {ok,calc}
+```
 
 ## Advanced Example
 
@@ -51,7 +57,7 @@ Add `relx` release definition to `rebar.config`:
 ### Frontend
 Create another release `frontend`, also depending on `lambda`, and implementing basic web server:
 
-Frontend release does not contain any backend code at all, but it needs access to `calc` module API.
+Frontend release does not contain any backend code at all.
 
 
 Additional examples [available](doc/examples/BASIC.md).

@@ -41,10 +41,14 @@
 %%--------------------------------------------------------------------
 %% API implementation
 
+-type options() :: #{
+    capacity := pos_integer()
+}.
+
 %% @doc Starts the server and links it to the caller.
--spec start_link(gen:emgr_name(), module(), pos_integer()) -> gen:start_ret().
-start_link(Broker, Module, Capacity) ->
-    gen_server:start_link(?MODULE, [Broker, Module, Capacity], []).
+-spec start_link(gen:emgr_name(), module(), options()) -> gen:start_ret().
+start_link(Broker, Module, Options) ->
+    gen_server:start_link(?MODULE, [Broker, Module, Options], []).
 
 %%-----------------------------------------------------------------
 %% gen_server implementation
@@ -66,7 +70,7 @@ start_link(Broker, Module, Capacity) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
-init([Broker, Module, Capacity]) ->
+init([Broker, Module, #{capacity := Capacity}]) ->
     %% monitor broker and sell some capacity
     _ = lambda_broker:sell(Broker, Module, Capacity),
     %% trap exists, as server acts as a supervisor

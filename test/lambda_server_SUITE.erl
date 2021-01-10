@@ -37,7 +37,7 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     Cap = 10,
-    {ok, Server} = lambda_server:start_link(self(), ?MODULE, Cap),
+    {ok, Server} = lambda_server:start_link(self(), ?MODULE, #{capacity => Cap}),
     gen:stop(Server).
 
 broker_monitor() ->
@@ -45,7 +45,7 @@ broker_monitor() ->
 
 broker_monitor(Config) when is_list(Config) ->
     %% start the server without broker
-    {ok, Server} = lambda_server:start_link(?FUNCTION_NAME, ?MODULE, 100),
+    {ok, Server} = lambda_server:start_link(?FUNCTION_NAME, ?MODULE, #{capacity => 100}),
     %% ensure it works when broker is registered
     register(?FUNCTION_NAME, self()),
     Server ! {connect, spawn(fun () -> ok end), 10}, %% trigger "sell" message

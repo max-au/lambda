@@ -220,7 +220,7 @@ command(#lambda_state{authorities = Auth, brokers = Brokers, plb = _Plb, request
                 [];
             Brokers ->
                 [
-                    {10, {call, gen_server, start, [lambda_server, [proper_types:oneof(Brokers), proper_types:oneof(?MODULES), proper_types:range(1, ?MAX_SERVER_CAPACITY)], []]}},
+                    {10, {call, gen_server, start, [lambda_server, [proper_types:oneof(Brokers), proper_types:oneof(?MODULES), #{capacity => proper_types:range(1, ?MAX_SERVER_CAPACITY)}], []]}},
                     {10, {call, gen_server, start, [lambda_plb, [proper_types:oneof(Brokers), proper_types:oneof(?MODULES), #{high => proper_types:range(1, ?MAX_PLB_CAPACITY)}], []]}}
                 ]
         end,

@@ -7,7 +7,8 @@
 
 %% API
 -export([
-    start_link/3
+    publish/1,
+    discover/1
 ]).
 
 %% Erlang node address. Expected to be extended to add DNS and other discovery layers.
@@ -23,15 +24,12 @@
 
 -export_type([address/0, location/0, points/0]).
 
-%% Lambda options
--type options() :: #{}.
-
 %%--------------------------------------------------------------------
-%% @doc Rewrites an existing module (subset of functions) into remotely
-%%      executed, and starts a PLB for that module, linked to the
-%%      current process.
--spec start_link(module(), Capacity :: pos_integer(), options()) -> ok.
-start_link(_Module, _Capacity, _Options) ->
-    %% read module information, and replace all functions with proxies,
-    %%  excluding system-defined function and exclusions by user.
-    ignore.
+%% @doc Discovers a module, and starts a PLB for that module under lambda supervision.
+-spec discover(module()) -> ok.
+discover(Module) ->
+    lambda_plb_sup:start_plb(Module, #{low => 1, high => 10}).
+
+%% @doc Publishes  a module, starting server under lambda supervision.
+publish(Module) ->
+    lambda_server_sup:start_server(Module, #{capacity => 10}).

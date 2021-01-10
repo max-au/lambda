@@ -167,7 +167,7 @@ fail_capacity_wait(Config) when is_list(Config) ->
     Delay = 200,
     %% start both client & server locally (also verifies that it's possible - and there
     %%  are no registered names clashes)
-    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, Concurrency),
+    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     %% spawn just enough requests to exhaust tokens
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
@@ -198,7 +198,7 @@ call_fail() ->
 
 call_fail(Config) when is_list(Config) ->
     Concurrency = 5,
-    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, Concurrency),
+    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, exit, [kill], infinity) end)
         || _ <- lists:seq(1, Concurrency * 5)],
     wait_complete(Spawned),
@@ -210,7 +210,7 @@ packet_loss() ->
 
 packet_loss(Config) when is_list(Config) ->
     Concurrency = 5,
-    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, Concurrency),
+    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     %% sync broker + plb to ensure it received demand
     Lb = ?config(lb, Config),
     lambda_test:sync_via(Worker, ?config(broker, Config)), %% this flushes broker (order sent to plb)
