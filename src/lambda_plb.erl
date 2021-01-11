@@ -17,6 +17,7 @@
     start_link/2,
     start_link/3,
 
+    compile/1,
     cast/4,
     call/4,
     capacity/1
@@ -66,6 +67,22 @@ start_link(Broker, Module, Options) when is_atom(Module) ->
 
 %%--------------------------------------------------------------------
 %% API
+
+%% @doc Waits until PLB discovers the module, and compiles proxy module.
+-spec compile(gen:emgr_name()) -> ok.
+compile(Srv) ->
+    #{module := Module, exports := Exports, attributes := Attrs} = gen_server:call(Srv, module),
+    %% create a module (technically possible to make an AST, but for compatibility
+    %%  reasons it's better to use text lines for compilation)
+    ExpLine = "-export([" ++ lists:flatten(lists:join(", ", [io_lib:format("~s/~b", [F, A]) || {F, A} <- Exports])) ++ "]).",
+    Impl = [proxy(Module, F, A, Attrs) || {F, A} <- Exports],
+    Lines = ["-module(" ++ atom_to_list(Module) ++ ").", ExpLine] ++ Impl,
+    %% compile resulting proxy file
+    Tokens = [begin {ok, T, _} = erl_scan:string(L), T end || L <- Lines],
+    Forms = [begin {ok, F} = erl_parse:parse_form(T), F end || T <- Tokens],
+    {ok, Module, Binary} = compile:forms(Forms),
+    {module, Module} = code:load_binary(Module, lambda, Binary),
+    Module.
 
 %% @doc Starts a request on a node selected with weighted random
 %%      sampling. May block if no capacity left.
@@ -185,6 +202,9 @@ handle_call(token, _From, #lambda_plb_state{capacity = Cap, index_to_pid = Itp} 
     Cap =:= 1 andalso begin State#lambda_plb_state.queue ! block end,
     % ?LOG_DEBUG("~p: giving token ~p", [_From, To]),
     {reply, To, State#lambda_plb_state{capacity = Cap - 1}};
+
+handle_call(module, _From, #lambda_plb_state{module = Mod} = State) ->
+    {reply, #{module => Mod, exports => [{pi, 1}], attributes => []}, State};
 
 handle_call(capacity, _From, #lambda_plb_state{capacity = Cap} = State) ->
     {reply, Cap, State}.
@@ -328,3 +348,7 @@ take_bound(Bound, Idx, Mask) ->
         Right ->
             take_bound(Right, Idx + Mask, Mask bsr 1)
     end.
+
+proxy(M, F, Arity, _Attrs) ->
+    Args = lists:join(", ", ["Arg" ++ integer_to_list(Seq) || Seq <- lists:seq(1, Arity)]),
+    lists:flatten(io_lib:format("~s(~s) -> lambda_plb:call(~s, ~s, [~s], infinity).", [F, Args, M, F, Args])).

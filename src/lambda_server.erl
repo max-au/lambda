@@ -72,7 +72,7 @@ start_link(Broker, Module, Options) ->
 
 init([Broker, Module, #{capacity := Capacity}]) ->
     %% monitor broker and sell some capacity
-    _ = lambda_broker:sell(Broker, Module, Capacity),
+    _ = lambda_broker:sell(Broker, Module, Capacity, module_meta(Module)),
     %% trap exists, as server acts as a supervisor
     process_flag(trap_exit, true),
     {ok, #lambda_server_state{module = Module, capacity = Capacity, broker = Broker}}.
@@ -108,3 +108,12 @@ handle_info({connect, To, Cap}, #lambda_server_state{module = Module, conns = Co
     NewCap = Capacity - Cap,
     lambda_broker:sell(Broker, Module, NewCap),
     {noreply, State#lambda_server_state{capacity = NewCap, conns = Conns#{Conn => Cap}}}.
+
+%%--------------------------------------------------------------------
+%% @private Collects meta-information (reflection) of a module to publish
+
+module_meta(Module) ->
+    Exported = Module:module_info(exports),
+    %% hints explaining call/cast behaviour
+    Attrs = [AttrList || {lambda, AttrList} <- Module:module_info(attributes)],
+    #{md5 => Module:module_info(md5), exports => Exported, attributes => Attrs}.

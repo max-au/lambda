@@ -26,7 +26,9 @@
     authorities/1,
     %% broker API
     sell/3,
+    sell/4,
     buy/3,
+    buy/4,
     cancel/2
 ]).
 
@@ -41,6 +43,17 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
+
+-type sell_meta() :: #{
+    md5 := binary(),
+    exports := [{atom(), pos_integer()}],
+    attributes => [term()]
+}.
+
+-type buy_meta() :: #{}.
+
+-export_type([sell_meta/0, buy_meta/0]).
+
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -61,11 +74,15 @@ authorities(Broker) ->
 %%      order, which is sent (updated) to all exchanges serving the
 %%      Module. If there are no exchanges known, authorities are
 %%      queried.
-%%      Asynchronous, does not guarantee success, therefore Seller
-%%      is expected to monitor the broker.
 -spec sell(gen:emgr_name(), module(), pos_integer()) -> ok.
-sell(Srv, Name, Quantity) ->
-    gen_server:cast(Srv, {sell, Name, self(), Quantity}).
+sell(Srv, Module, Quantity) ->
+    sell(Srv, Module, Quantity, #{}).
+
+%% @doc Sells some capacity of (potentially newly published) Module,
+%%      with meta-information provided.
+-spec sell(gen:emgr_name(), module(), pos_integer(), sell_meta()) -> ok.
+sell(Srv, Module, Quantity, Meta) ->
+    gen_server:cast(Srv, {sell, Module, self(), Quantity, Meta}).
 
 %% @doc Creates an outstanding "buy" order, which is fanned out to
 %%      all known exchanges serving the module.
@@ -73,7 +90,12 @@ sell(Srv, Name, Quantity) ->
 -spec buy(gen:emgr_name(), module(), pos_integer()) -> ok.
 buy(Srv, Name, Quantity) ->
     %% Pass self() explicitly to allow tricks with proxy-ing gen_server calls
-    gen_server:cast(Srv, {buy, Name, self(), Quantity}).
+    buy(Srv, Name, Quantity, #{}).
+
+-spec buy(gen:emgr_name(), module(), pos_integer(), buy_meta()) -> ok.
+buy(Srv, Name, Quantity, Meta) ->
+    %% Pass self() explicitly to allow tricks with proxy-ing gen_server calls
+    gen_server:cast(Srv, {buy, Name, self(), Quantity, Meta}).
 
 %% @doc Cancels an outstanding order. Asynchronous.
 -spec cancel(gen:emgr_name(), pid()) -> ok.
@@ -129,7 +151,7 @@ init(Peers) ->
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
     {reply, maps:keys(Auth), State}.
 
-handle_cast({Type, Module, Trader, Quantity}, #lambda_broker_state{self = Self, next_id = Id, exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
+handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = Self, next_id = Id, exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
     when Type =:= buy; Type =:= sell ->
     case maps:find(Trader, Monitors) of
         {ok, {_Type, Module, _MRef}} ->
@@ -144,7 +166,7 @@ handle_cast({Type, Module, Trader, Quantity}, #lambda_broker_state{self = Self, 
             {noreply, State#lambda_broker_state{
                 orders = Orders#{Module => NewOut}}};
         error ->
-            ?dbg("~s ~b ~s for ~p", [Type, Quantity, Module, Trader]),
+            ?dbg("~s ~b ~s for ~p (~200p)", [Type, Quantity, Module, Trader, Meta]),
             %% monitor seller
             MRef = erlang:monitor(process, Trader),
             NewMons = Monitors#{Trader => {Type, Module, MRef}},
@@ -153,10 +175,10 @@ handle_cast({Type, Module, Trader, Quantity}, #lambda_broker_state{self = Self, 
             case maps:find(Module, Exchanges) of
                 {ok, Exch} when Type =:= buy ->
                     %% already subscribed, send orders to known exchanges
-                    [lambda_exchange:buy(Ex, Id, Quantity) || Ex <- Exch];
+                    [lambda_exchange:buy(Ex, Id, Quantity, Meta) || Ex <- Exch];
                 {ok, Exch} when Type =:= sell ->
                     %% already subscribed, send orders to known exchanges
-                    [lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity) || Ex <- Exch];
+                    [lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, Meta) || Ex <- Exch];
                 error ->
                     %% not subscribed to any exchanges yet
                     subscribe_exchange(Authority, Module)
@@ -194,8 +216,8 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
     NewExch =/= [] andalso
         ?dbg("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding]),
     [case Type of
-         buy -> lambda_exchange:buy(Ex, Id, Quantity);
-         sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity)
+         buy -> lambda_exchange:buy(Ex, Id, Quantity, #{});
+         sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, #{})
      end || Ex <- NewExch, {Id, Type, Trader, Quantity, Prev} <- Outstanding,
         lists:member(Ex, Prev) =:= false],
     {noreply, State#lambda_broker_state{exchanges = Exchanges#{Module => NewExch ++ Known}}};

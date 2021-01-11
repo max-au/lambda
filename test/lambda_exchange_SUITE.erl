@@ -57,8 +57,8 @@ basic() ->
 basic(Config) when is_list(Config) ->
     Cap = 100,
     BuyId = 1,
-    lambda_exchange:sell(?config(exchange, Config), contact, 0, Cap),
-    lambda_exchange:buy(?config(exchange, Config), BuyId, Cap),
+    lambda_exchange:sell(?config(exchange, Config), contact, 0, Cap, #{}),
+    lambda_exchange:buy(?config(exchange, Config), BuyId, Cap, #{}),
     receive
         {order, BuyId, ?FUNCTION_NAME, [{contact, Cap}]} ->
             ok;

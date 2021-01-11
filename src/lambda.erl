@@ -28,7 +28,15 @@
 %% @doc Discovers a module, and starts a PLB for that module under lambda supervision.
 -spec discover(module()) -> ok.
 discover(Module) ->
-    lambda_plb_sup:start_plb(Module, #{low => 1, high => 10}).
+    case erlang:module_loaded(Module) of
+        true ->
+            %% module is available locally
+            ignore;
+        false ->
+            {ok, Plb} = lambda_plb_sup:start_plb(Module, #{low => 1, high => 10}),
+            Module = lambda_plb:compile(Plb),
+            {ok, Plb}
+    end.
 
 %% @doc Publishes  a module, starting server under lambda supervision.
 publish(Module) ->

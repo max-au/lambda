@@ -50,12 +50,12 @@ broker_monitor(Config) when is_list(Config) ->
     register(?FUNCTION_NAME, self()),
     Server ! {connect, spawn(fun () -> ok end), 10}, %% trigger "sell" message
     receive
-        {'$gen_cast',{sell, lambda_server_SUITE, Server, 90}} ->
+        {'$gen_cast',{sell, lambda_server_SUITE, Server, 90, #{}}} ->
             ok
     end,
     %% check monitoring works, and we get the capacity back
     receive
-        {'$gen_cast',{sell, lambda_server_SUITE, Server, 100}} ->
+        {'$gen_cast',{sell, lambda_server_SUITE, Server, 100, #{}}} ->
             ok
     end,
     gen:stop(Server).

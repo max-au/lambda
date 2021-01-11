@@ -99,7 +99,7 @@ make_node(Args, Capacity) ->
     Bootstrap = #{{lambda_authority, node()} => lambda_discovery:get_node()},
     {Peer, Node} = lambda_test:start_node_link(Bootstrap, Args, false),
     %% Peer will connect back to us at some point later, courtesy of lambda_broker and authority
-    SrvSpec = #{id => lambda_server, start => {lambda_server, start_link, [lambda_broker, ?MODULE, Capacity]}},
+    SrvSpec = #{id => lambda_server, start => {lambda_server, start_link, [lambda_broker, ?MODULE, #{capacity => Capacity}]}},
     {ok, Worker} = peer:apply(Peer, supervisor, start_child, [lambda_sup, SrvSpec]),
     unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
     {Node, Peer, Worker, Capacity}.

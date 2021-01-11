@@ -37,8 +37,8 @@
 %% API
 -export([
     start_link/1,
-    sell/4,
-    buy/3
+    sell/5,
+    buy/4
 ]).
 
 -behaviour(gen_server).
@@ -63,11 +63,11 @@ start_link(Module) ->
 %%--------------------------------------------------------------------
 %% API
 
-sell(Exchange, SellerContact, Id, Capacity) ->
-    erlang:send(Exchange, {sell, SellerContact, Id, Capacity, self()}, [noconnect, nosuspend]).
+sell(Exchange, SellerContact, Id, Capacity, Meta) ->
+    erlang:send(Exchange, {sell, SellerContact, Id, Capacity, self(), Meta}, [noconnect, nosuspend]).
 
-buy(Exchange, Id, Capacity) ->
-    erlang:send(Exchange, {buy, Id, Capacity, self()}, [noconnect, nosuspend]).
+buy(Exchange, Id, Capacity, Meta) ->
+    erlang:send(Exchange, {buy, Id, Capacity, self(), Meta}, [noconnect, nosuspend]).
 
 %%--------------------------------------------------------------------
 %% gen_server implementation
@@ -117,7 +117,7 @@ handle_call(_Req, _From, #lambda_exchange_state{}) ->
 handle_cast(_Req, _State) ->
     error(notsup).
 
-handle_info({buy, Id, Quantity, Broker}, #lambda_exchange_state{module = Module, buy = Buy, sell = Sell} = State) ->
+handle_info({buy, Id, Quantity, Broker, _Meta}, #lambda_exchange_state{module = Module, buy = Buy, sell = Sell} = State) ->
     %% match outstanding sales
     %% shortcut if there is anything for sale - to avoid monitoring new buyer
     case match(Broker, Module, Id, Quantity, Sell) of
@@ -132,7 +132,7 @@ handle_info({buy, Id, Quantity, Broker}, #lambda_exchange_state{module = Module,
             {noreply, match_buy(State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining} | Buy], sell = NewSell})}
     end;
 
-handle_info({sell, SellerContact, _Id, Quantity, Broker}, #lambda_exchange_state{sell = Sell} = State) ->
+handle_info({sell, SellerContact, _Id, Quantity, Broker, _Meta}, #lambda_exchange_state{sell = Sell} = State) ->
     Order =
         case maps:find(Broker, Sell) of
             {ok, {_OldQ, MRef, SellerContact}} ->
