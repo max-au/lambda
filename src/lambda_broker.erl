@@ -22,8 +22,9 @@
 
 %% API
 -export([
-    start_link/1,
+    start_link/0,
     authorities/1,
+    authorities/2,
     %% broker API
     sell/3,
     sell/4,
@@ -58,14 +59,18 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(lambda:points()) -> gen:start_ret().
-start_link(Peers) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Peers, []).
+-spec start_link() -> gen:start_ret().
+start_link() ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc returns list of authorities known to this broker
 -spec authorities(gen:emgr_name()) -> [pid()].
 authorities(Broker) ->
     gen_server:call(Broker, authorities).
+
+%% @doc adds lists of authorities known
+authorities(Broker, Authorities) ->
+    gen_server:cast(Broker, {peers, Authorities}).
 
 %%--------------------------------------------------------------------
 %% Extended API
@@ -116,8 +121,6 @@ cancel(Srv, Proc) ->
 -record(lambda_broker_state, {
     %% self address (used by authorities)
     self :: lambda_discovery:address(),
-    %% bootstrap process informatin
-    boot :: gen:emgr_name(),
     %% authority processes + authority addresses to peer discovery
     authority = #{} :: #{pid() => lambda_discovery:address()},
     %% exchanges connections
@@ -139,13 +142,11 @@ cancel(Srv, Proc) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init(lambda:points()) -> {ok, state()}.
-init(Peers) ->
+-spec init([]) -> {ok, state()}.
+init([]) ->
     %% bootstrap discovery: attempt to find authorities
     Self = lambda_discovery:get_node(),
-    %% initial discovery
-    discover(Peers, Self),
-    {ok, #lambda_broker_state{self = Self, boot = Peers}}.
+    {ok, #lambda_broker_state{self = Self}}.
 
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
@@ -166,7 +167,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
             {noreply, State#lambda_broker_state{
                 orders = Orders#{Module => NewOut}}};
         error ->
-            ?dbg("~s ~b ~s for ~p (~200p)", [Type, Quantity, Module, Trader, Meta]),
+            ?dbg("~s ~b ~s for ~p", [Type, Quantity, Module, Trader]),
             %% monitor seller
             MRef = erlang:monitor(process, Trader),
             NewMons = Monitors#{Trader => {Type, Module, MRef}},
@@ -190,7 +191,12 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
 
 %% handles cancellations for both sell and buy orders (should it be split?)
 handle_cast({cancel, Trader}, State) ->
-    {reply, cancel(Trader, true, State)}.
+    {reply, cancel(Trader, true, State)};
+
+handle_cast({peers, Peers}, #lambda_broker_state{self = Self} = State) ->
+    %% initial discovery
+    discover(Peers, Self),
+    {noreply, State}.
 
 handle_info({authority, NewAuth, _AuthAddr, _MoreAuth}, #lambda_broker_state{authority = Auth} = State)
     when is_map_key(NewAuth, Auth) ->

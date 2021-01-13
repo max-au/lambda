@@ -39,7 +39,7 @@ end_per_suite(Config) ->
     proplists:delete(disco, Config).
 
 all() ->
-    [sequential_prop].
+    [].
 
 %% -------------------------------------------------------------------
 %% Test cases
@@ -209,10 +209,9 @@ postcondition(_State, _Cmd, _Res) ->
 %%  * net splits [NOT IMPLEMENTED]
 %% Command generation logic re-implements "precondition" logic
 command(#lambda_state{authorities = Auth, brokers = Brokers, plb = _Plb, requests = _Requests}) ->
-    Peers = #{},
     %% nodes starting (authority/broker)
-    AuthorityStart = {1, {call, gen_server, start, [lambda_authority, Peers, []]}},
-    BrokerStart = {5, {call, gen_server, start, [lambda_broker, Peers, []]}},
+    AuthorityStart = {1, {call, gen_server, start, [lambda_authority, [], []]}},
+    BrokerStart = {5, {call, gen_server, start, [lambda_broker, [], []]}},
     %% server/plb starting (requires a broker)
     ServerOrPlbStart =
         case Brokers of
@@ -254,11 +253,11 @@ command(#lambda_state{authorities = Auth, brokers = Brokers, plb = _Plb, request
     Choices = [AuthorityStart, BrokerStart | ServerOrPlbStart ++ Stop],%% ++ StartRequest ++ FinishRequest],
     proper_types:frequency(Choices).
 
-next_state(#lambda_state{authorities = Auth} = State, Res, {call, gen_server, start, [lambda_authority, _Peers, []]}) ->
+next_state(#lambda_state{authorities = Auth} = State, Res, {call, gen_server, start, [lambda_authority, [], []]}) ->
     NewAuth = {call, erlang, element, [2, Res]},
     State#lambda_state{authorities = [NewAuth | Auth]};
 
-next_state(#lambda_state{brokers = Brokers} = State, Res, {call, gen_server, start, [lambda_broker, _Peers, []]}) ->
+next_state(#lambda_state{brokers = Brokers} = State, Res, {call, gen_server, start, [lambda_broker, [], []]}) ->
     NewBroker = {call, erlang, element, [2, Res]},
     State#lambda_state{brokers = [NewBroker | Brokers]};
 

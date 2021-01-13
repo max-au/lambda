@@ -37,6 +37,21 @@
 
 -include_lib("kernel/include/inet.hrl").
 
+%%--------------------------------------------------------------------
+%% Public API
+
+%% Full set of information needed to establish network connection
+%%  to a specific host, with no external services required.
+%% TODO: extend to add TLS support
+-type address() :: {inet:ip_address(), inet:port_number()}.
+
+%% Process location (similar to emgr_name()). Process ID (pid)
+%%  designates both node name and ID. If process ID is not known,
+%%  locally registered process name can be used.
+-type location() :: pid() | {atom(), node()}.
+
+-export_type([address/0, location/0]).
+
 %% @doc
 %% Starts the server and links it to calling process. Required for
 %%  epmd interface.
@@ -50,15 +65,16 @@ start_link() ->
     end.
 
 %% @doc Sets the mapping between node name and address to access the node.
--spec set_node(node() | pid(), lambda:address()) -> ok.
+-spec set_node(location(), address()) -> ok.
 set_node(Pid, Address) when is_pid(Pid) ->
     set_node(node(Pid), Address);
 set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
     set_node(Node, Address);
+set_node(Node, _Address) when Node =:= node() ->
+    %% ignore attempts to set this node address
+    ok;
 set_node(Node, {_Ip, _Port} = Address) ->
-    gen_server:call(?MODULE, {set, Node, Address});
-set_node(Node, not_distributed) when Node =:= node() ->
-    ok.
+    gen_server:call(?MODULE, {set, Node, Address}).
 
 %% @doc Removes the node name from the map. Does nothing if node was never added.
 -spec del_node(node()) -> ok.
@@ -74,7 +90,7 @@ get_node(Node) ->
 %%      expected to work when sent to other nodes via distribution
 %%      channels. It is expected to return external node address,
 %%      if host is behind NAT.
--spec get_node() -> lambda:address().
+-spec get_node() -> address() | not_distributed.
 get_node() ->
     gen_server:call(?MODULE, {get, node()}).
 
@@ -175,22 +191,10 @@ address_please(Name, Host, AddressFamily) ->
 init([]) ->
     is_replaced() orelse
         begin
-            %% Replace erl_epmd code on the fly
-            %%  to redirect existing calls. Should only be used for cases when it is
-            %%  not possible to control -epmd_module command line argument.
-            {Mod, Binary, _Filename} = code:get_object_code(?MODULE),
-            {ok, {Mod, [{abstract_code, {_, Forms}}]}} = beam_lib:chunks(Binary, [abstract_code]),
-            Expanded = erl_expand_records:module(Forms, [strict_record_tests]),
-            Replaced = [
-                case Form of
-                    {attribute, Ln, module, ?MODULE} ->
-                        {attribute, Ln, module, erl_epmd};
-                    Other ->
-                        Other
-                end || Form <- Expanded],
-            {ok, erl_epmd, Bin} = compile:forms(Replaced),
+            %% Hot code load erl_epmd to replace address_please/3.
             true = code:unstick_mod(erl_epmd),
-            {module, erl_epmd} = code:load_binary(erl_epmd, code:which(?MODULE), Bin),
+            rename(erl_epmd, erl_epmd_ORIGINAL),
+            copy(lambda_discovery, erl_epmd),
             true = code:stick_mod(erl_epmd),
             false = code:purge(erl_epmd)
         end,
@@ -246,7 +250,9 @@ terminate(_Reason, _State) ->
             {module, erl_epmd} = code:load_abs(BeamFile, erl_epmd),
             %% we're still running old code (this code!), so can't purge
             %%  effectively
-            true = code:stick_mod(erl_epmd)
+            true = code:stick_mod(erl_epmd),
+            false = code:purge(erl_epmd_ORIGINAL),
+            true = code:delete(erl_epmd_ORIGINAL)
         end.
 
 %%--------------------------------------------------------------------
@@ -255,6 +261,24 @@ terminate(_Reason, _State) ->
 is_replaced() ->
     Kernel = code:lib_dir(kernel, ebin),
     filename:dirname(code:which(erl_epmd)) =/= Kernel.
+
+copy(From, To) ->
+    {Mod, Binary, _Filename} = code:get_object_code(From),
+    {ok, {Mod, [{abstract_code, {_, Forms}}]}} = beam_lib:chunks(Binary, [abstract_code]),
+    Expanded = erl_expand_records:module(Forms, [strict_record_tests]),
+    Replaced = [
+        case Form of
+            {attribute, Ln, module, From} ->
+                {attribute, Ln, module, To};
+            Other ->
+                Other
+        end || Form <- Expanded],
+    {ok, To, Bin} = compile:forms(Replaced, [silent]),
+    {module, To} = code:load_binary(To, code:which(From), Bin).
+
+rename(From, To) ->
+    copy(From, To),
+    false = code:purge(From).
 
 local_addr(Host, Family) ->
     case application:get_env(kernel, inet_dist_use_interface) of

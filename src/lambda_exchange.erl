@@ -98,7 +98,7 @@ buy(Exchange, Id, Capacity, Meta) ->
     buy = [] :: [buy_order()]
 }).
 
-%% -define(DEBUG, true).
+-define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: exchange " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -140,7 +140,7 @@ handle_info({sell, SellerContact, _Id, Quantity, Broker, _Meta}, #lambda_exchang
                 {Quantity, MRef, SellerContact};
             {ok, {_OldQ, MRef, _DiffSellerContact}} ->
                 ?dbg("sell BROKEN update from ~p for ~b (id ~b, contact: ~300p while expected ~300p)",
-                    [Broker, Quantity, _DiffSellerContact, SellerContact]),
+                    [Broker, Quantity, _Id, _DiffSellerContact, SellerContact]),
                 {Quantity, MRef, SellerContact};
             error ->
                 ?dbg("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, _Id, SellerContact]),

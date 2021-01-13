@@ -14,17 +14,17 @@
 
 %% Test cases exports
 -export([
-    basic/0, basic/1
+    basic/0, basic/1,
+    formats/0, formats/1
 ]).
 
--include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 suite() ->
     [{timetrap, {seconds, 5}}].
 
 all() ->
-    [basic].
+    [basic, formats].
 
 init_per_suite(Config) ->
     {ok, Disco} = lambda_discovery:start_link(),
@@ -50,7 +50,7 @@ end_per_suite(Config) ->
     end.
 
 basic() ->
-    [{doc, "Tests simple EPMD scenarios"}].
+    [{doc, "Tests that get_node + set_node work together both directions"}].
 
 basic(Config) when is_list(Config) ->
     %% start a peer with no epmd whatsoever, but make it listen
@@ -81,3 +81,9 @@ basic(Config) when is_list(Config) ->
     ok = peer:apply(Peer, lambda_discovery, set_node, [node(), SelfAddr]),
     true = peer:apply(Peer, net_kernel, connect_node, [node()]),
     peer:stop(Peer).
+
+formats() ->
+    [{doc, "Tests bootspec formats (pid, node, epmd, ...)"}].
+
+formats(Config) when is_list(Config) ->
+    ok.

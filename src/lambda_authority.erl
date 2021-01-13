@@ -35,7 +35,7 @@
 
 %% API
 -export([
-    start_link/1,
+    start_link/0,
     authorities/1,
     brokers/1,
     peers/2
@@ -57,9 +57,9 @@
 %% @doc
 %% Starts the server and links it to calling process. Registers a local
 %%  process name.
--spec start_link(lambda:points()) -> gen:start_ret().
-start_link(Peers) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Peers, []).
+-spec start_link() -> gen:start_ret().
+start_link() ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %%--------------------------------------------------------------------
 %% API
@@ -86,8 +86,6 @@ peers(Authority, Peers) ->
 -record(lambda_authority_state, {
     %% keeping address of "self" cached
     self :: lambda_discovery:address(),
-    %% bootstrap process information
-    boot :: gen:emgr_name(),
     %% modules known to the authority, mapped to exchanges
     exchanges = #{} :: #{module() => {Local :: pid(), Remote :: [pid()]}},
     %% other authorities. When a new node comes up, it is expected to
@@ -106,17 +104,10 @@ peers(Authority, Peers) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init(lambda:points()) -> {ok, state()}.
-init(Peers) ->
-    %% attempt to discover initial set of authorities
+-spec init([]) -> {ok, state()}.
+init([]) ->
     Self = lambda_discovery:get_node(),
-    maps:map(
-        fun (Location, Addr) ->
-            ok = lambda_discovery:set_node(Location, Addr),
-            Location ! {authority, self(), Self}
-        end, Peers),
-    ?dbg("init: discovering ~200p", [Peers]),
-    {ok, #lambda_authority_state{self = Self, boot = Peers}}.
+    {ok, #lambda_authority_state{self = Self}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
@@ -124,8 +115,13 @@ handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = St
 handle_call(brokers, _From, #lambda_authority_state{brokers = Brokers} = State) ->
     {reply, maps:keys(Brokers), State}.
 
-handle_cast({peers, _Peers}, #lambda_authority_state{} = State) ->
-    ?dbg("init: adding peers: ~200p", [_Peers]),
+handle_cast({peers, Peers}, #lambda_authority_state{self = Self} = State) ->
+    ?dbg("discovering ~200p", [Peers]),
+    maps:map(
+        fun (Location, Addr) ->
+            ok = lambda_discovery:set_node(Location, Addr),
+            Location ! {authority, self(), Self}
+        end, Peers),
     {noreply, State}.
 
 %% Broker requesting exchanges for a Module

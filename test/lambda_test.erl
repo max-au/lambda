@@ -84,7 +84,7 @@ start_node_link(Bootstrap, CmdLine, Authority) ->
     CP = code:lib_dir(lambda, ebin),
     TestCP = filename:dirname(code:which(?MODULE)),
     Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
-    Boot = if Bootstrap =/= undefined -> ["-lambda", "bootstrap", lists:flatten(io_lib:format("~10000tp", [Bootstrap]))]; true -> [] end,
+    Boot = if Bootstrap =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("[{static, ~10000tp}]", [Bootstrap]))]; true -> [] end,
     {ok, Peer} = peer:start_link(#{node => Node, connection => standard_io,
         args => [
             %% "-kernel", "dist_auto_connect", "never",

@@ -10,8 +10,7 @@
   {env,[
    %% {authority, false},
    %% {broker, true},
-   %% {bootstrap, ...} %% see lambda:points(), empty by default
-   %% {bootspec, ...} %% see lambda_bootstrap:bootspec() type
+   %% {bootspec, ...} %% see lambda_bootstrap
   ]},
 
   {licenses, ["BSD 3-clause clear"]},

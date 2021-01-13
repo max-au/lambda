@@ -31,7 +31,7 @@ all() ->
 init_per_suite(Config) ->
     {ok, Physical} = lambda_discovery:start_link(),
     erlang:unlink(Physical),
-    {ok, Broker} = lambda_broker:start_link(#{}),
+    {ok, Broker} = lambda_broker:start_link(),
     erlang:unlink(Broker),
     [{broker, Broker}, {physical, Physical} | Config].
 

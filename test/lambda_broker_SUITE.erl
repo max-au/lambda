@@ -52,11 +52,13 @@ end_per_group(_Group, Config) ->
 %% Starts an authority, and returns bootstrap to start the rest
 %%  of the system.
 start_authority(Peers) ->
-    {ok, AuthPid} = gen_server:start_link(lambda_authority, Peers, []),
+    {ok, AuthPid} = gen_server:start_link(lambda_authority, [], []),
+    lambda_authority:peers(AuthPid, Peers),
     {AuthPid, #{AuthPid => lambda_discovery:get_node()}}.
 
 start_broker(Auth) ->
-    {ok, BrokerPid} = gen_server:start_link(lambda_broker, Auth, []),
+    {ok, BrokerPid} = gen_server:start_link(lambda_broker, [], []),
+    lambda_broker:authorities(BrokerPid, Auth),
     BrokerPid.
 
 %%--------------------------------------------------------------------
