@@ -49,22 +49,18 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     %% Server: publish calc
-    SrvNode = peer:random_name(),
-    {ok, Server} = peer:start_link(#{connection => standard_io, node => SrvNode}),
+    {ok, Host} = inet:gethostname(),
+    SrvNode = list_to_atom(lists:concat([authority, "@", Host])),
+    {ok, Server} = peer:start_link(#{connection => standard_io, node => SrvNode,
+        args => ["-lambda", "authority", "true"]}),
     %% local calc module into Server (module does not exist on disk)
     {module, calc} = peer:apply(Server, code, load_binary, [calc, nofile, calc()]),
     ok = peer:apply(Server, application, start, [lambda]),
     {ok, _Srv} = peer:apply(Server, lambda, publish, [calc]),
     %% Client: discover calc (using epmd)
-    ClntNode = peer:random_name(),
-    Boot = #{SrvNode => {SrvNode, epmd}},
-    {ok, Client} = peer:start_link(#{connection => standard_io, node => ClntNode,
-        args => ["-lambda", "bootstrap", lists:flatten(io_lib:format("~tp", [Boot]))]}),
+    {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
     ok = peer:apply(Client, application, start, [lambda]),
     {ok, _Plb} = peer:apply(Client, lambda, discover, [calc]),
-    %% ensure client capacity
-    Cap = peer:apply(Client, lambda_plb, capacity, [_Plb]),
-    ?assert(Cap > 0, {capacity, Cap}),
     %% Execute calc remotely (on the client)
     ?assertEqual(3.14, peer:apply(Client, calc, pi, [2])),
     %% Shutdown

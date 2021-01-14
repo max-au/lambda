@@ -46,12 +46,12 @@
 -include_lib("kernel/include/logger.hrl").
 
 -type sell_meta() :: #{
-    md5 := binary(),
-    exports := [{atom(), pos_integer()}],
-    attributes => [term()]
+    module => lambda:meta()
 }.
 
--type buy_meta() :: #{}.
+-type buy_meta() :: #{
+    vsn => term()
+}.
 
 -export_type([sell_meta/0, buy_meta/0]).
 
@@ -115,6 +115,7 @@ cancel(Srv, Proc) ->
     buy | sell,
     pid(),
     Quantity :: pos_integer(),
+    Meta :: sell_meta() | buy_meta(),
     Previous :: [pid()]         %% sellers that have been already forwarded
 }.
 
@@ -184,7 +185,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
                     %% not subscribed to any exchanges yet
                     subscribe_exchange(Authority, Module)
             end,
-            NewOrders = [{Id, Type, Trader, Quantity, []} | Existing],
+            NewOrders = [{Id, Type, Trader, Quantity, Meta, []} | Existing],
             {noreply, State#lambda_broker_state{next_id = Id + 1, monitors = NewMons,
                 orders = Orders#{Module => NewOrders}}}
     end;
@@ -222,9 +223,9 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
     NewExch =/= [] andalso
         ?dbg("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding]),
     [case Type of
-         buy -> lambda_exchange:buy(Ex, Id, Quantity, #{});
-         sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, #{})
-     end || Ex <- NewExch, {Id, Type, Trader, Quantity, Prev} <- Outstanding,
+         buy -> lambda_exchange:buy(Ex, Id, Quantity, Meta);
+         sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, Meta)
+     end || Ex <- NewExch, {Id, Type, Trader, Quantity, Meta, Prev} <- Outstanding,
         lists:member(Ex, Prev) =:= false],
     {noreply, State#lambda_broker_state{exchanges = Exchanges#{Module => NewExch ++ Known}}};
 
@@ -233,12 +234,12 @@ handle_info({order, Id, Module, Sellers}, #lambda_broker_state{orders = Orders} 
     ?dbg("order reply: id ~b with ~200p", [Id, Sellers]),
     Outstanding = maps:get(Module, Orders),
     %% find the order
-    {value, {Id, buy, Buyer, Quantity, Previous}} = lists:keysearch(Id, 1, Outstanding),
+    {value, {Id, buy, Buyer, Quantity, BuyMeta, Previous}} = lists:keysearch(Id, 1, Outstanding),
     %% notify buyers if any order complete
     case notify_buyer(Buyer, Quantity, Sellers, Previous, []) of
         {QuantityLeft, AlreadyUsed} ->
             %% incomplete, keep current state (updating remaining quantity)
-            Out = lists:keyreplace(Id, 1, Outstanding, {Id, buy, Buyer, QuantityLeft, AlreadyUsed}),
+            Out = lists:keyreplace(Id, 1, Outstanding, {Id, buy, Buyer, QuantityLeft, BuyMeta, AlreadyUsed}),
             {noreply, State#lambda_broker_state{orders = Orders#{Module => Out}}};
         done ->
             %% complete, may trigger exchange subscription removal
@@ -292,16 +293,21 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
             Demonitor andalso erlang:demonitor(MRef, [flush]),
             %% enumerate to find the order
             case maps:get(Module, Orders) of
-                [{_Id, Type, Pid, _Q, _Prev}] ->
+                [{Id, Type, Pid, _Q, _Prev}] ->
+                    cancel_exchange_order(Type, Id, maps:get(Module, Exchanges)),
                     %% no orders left for this module, unsubscribe from exchanges
                     broadcast(State#lambda_broker_state.authority, {cancel, Module, self()}),
                     State#lambda_broker_state{orders = maps:remove(Module, Orders), monitors = NewMonitors};
                 Outstanding ->
                     %% other orders are still in
-                    NewOut = lists:keydelete(Pid, 3, Outstanding),
+                    {value, {Id, Type, Pid, _Q, _Meta, _Prev}, NewOut} = lists:keytake(Pid, 3, Outstanding),
+                    cancel_exchange_order(Type, Id, maps:get(Module, Exchanges)),
                     State#lambda_broker_state{orders = Orders#{Module => NewOut}, monitors = NewMonitors}
             end
     end.
+
+cancel_exchange_order(Type, Id, Exchanges) ->
+    [lambda_exchange:cancel(Ex, Type, Id) || Ex <- Exchanges].
 
 subscribe_exchange(Auth, Module) ->
     broadcast(Auth, {exchange, Module, self()}).
@@ -314,7 +320,7 @@ notify_buyer(Buyer, Quantity, [], Previous, Servers) ->
     ?dbg("buyer ~p notification: ~200p", [Buyer, Servers]),
     connect_sellers(Buyer, Servers),
     {Quantity, Previous};
-notify_buyer(Buyer, Quantity, [{Seller, QSell} | Remaining], Previous, Servers) ->
+notify_buyer(Buyer, Quantity, [{Seller, QSell, Meta} | Remaining], Previous, Servers) ->
     %% filter and discard duplicates
     case lists:member(Seller, Previous) of
         true ->
@@ -322,17 +328,17 @@ notify_buyer(Buyer, Quantity, [{Seller, QSell} | Remaining], Previous, Servers) 
         false when Quantity =< QSell ->
             %% complete, in total
             ?dbg("buyer ~p complete (~b) notification: ~200p", [Buyer, Quantity, [{Seller, QSell} | Servers]]),
-            connect_sellers(Buyer, [{Seller, QSell} | Servers]),
+            connect_sellers(Buyer, [{Seller, QSell, Meta} | Servers]),
             done;
         false ->
             %% not yet complete, but maybe more servers are there?
-            notify_buyer(Buyer, Quantity - QSell, Remaining, [Seller | Previous], [{Seller, QSell} | Servers])
+            notify_buyer(Buyer, Quantity - QSell, Remaining, [Seller | Previous], [{Seller, QSell, Meta} | Servers])
     end.
 
 connect_sellers(_Buyer, []) ->
     ok;
 connect_sellers(Buyer, Contacts) ->
     %% sellers contacts were discovered, ensure it can be resolved
-    Servers = [{Pid, Quantity} || {{Pid, _Addr}, Quantity} <- Contacts],
+    Servers = [{Pid, Quantity, Meta} || {{Pid, _Addr}, Quantity, Meta} <- Contacts],
     %% pass on order to the actual buyer
     Buyer ! {order, Servers}.

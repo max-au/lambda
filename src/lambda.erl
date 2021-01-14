@@ -10,6 +10,14 @@
     discover/1
 ]).
 
+-type meta() :: #{
+    md5 := binary(),
+    exports := [{atom(), pos_integer()}],
+    attributes => [term()]
+}.
+
+-export_type([meta/0]).
+
 %%--------------------------------------------------------------------
 %% @doc Discovers a module, and starts a PLB for that module under lambda supervision.
 -spec discover(module()) -> {ok, pid()} | ignore.

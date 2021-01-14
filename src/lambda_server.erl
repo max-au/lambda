@@ -113,7 +113,7 @@ handle_info({connect, To, Cap}, #lambda_server_state{module = Module, conns = Co
 %% @private Collects meta-information (reflection) of a module to publish
 
 module_meta(Module) ->
-    Exported = Module:module_info(exports),
+    Exported = [{F, Arity} || {F, Arity} <- Module:module_info(exports), F =/= module_info],
     %% hints explaining call/cast behaviour
     Attrs = [AttrList || {lambda, AttrList} <- Module:module_info(attributes)],
     #{md5 => Module:module_info(md5), exports => Exported, attributes => Attrs}.

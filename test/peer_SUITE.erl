@@ -47,7 +47,8 @@ groups() ->
     ].
 
 all() ->
-    [{group, dist}, {group, oob}, {group, remote}].
+    %%[{group, dist}, {group, oob}, {group, remote}].
+    [{group, dist}, {group, oob}].
 
 init_per_suite(Config) ->
     case erl_epmd:names() of

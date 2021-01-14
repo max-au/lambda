@@ -51,9 +51,6 @@ end_per_suite(Config) ->
     lambda_test:end_local(),
     Config.
 
-init_per_testcase(throughput, Config) ->
-    {ok, Lb} = lambda_plb:start_link(lambda_broker, ?MODULE, #{low => 0, high => 10000000}),
-    [{lb, Lb} | Config];
 init_per_testcase(_TestCase, Config) ->
     {ok, Lb} = lambda_plb:start_link(lambda_broker, ?MODULE),
     [{lb, Lb} | Config].

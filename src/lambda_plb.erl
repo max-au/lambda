@@ -71,7 +71,7 @@ start_link(Broker, Module, Options) when is_atom(Module) ->
 %% @doc Waits until PLB discovers the module, and compiles proxy module.
 -spec compile(gen:emgr_name()) -> ok.
 compile(Srv) ->
-    #{module := Module, exports := Exports, attributes := Attrs} = gen_server:call(Srv, module),
+    #{module := Module, exports := Exports, attributes := Attrs} = gen_server:call(Srv, meta),
     %% create a module (technically possible to make an AST, but for compatibility
     %%  reasons it's better to use text lines for compilation)
     ExpLine = "-export([" ++ lists:flatten(lists:join(", ", [io_lib:format("~s/~b", [F, A]) || {F, A} <- Exports])) ++ "]).",
@@ -142,6 +142,8 @@ capacity(Module) ->
 -record(lambda_plb_state, {
     %% remember module name for event handler
     module :: module(),
+    %% meta: meta-information about currently loaded module
+    meta = [] :: [{pid(), reference()}] | lambda:meta(),
     %% current capacity, needed for quick reject logic
     capacity = 0 :: non_neg_integer(),
     %% high/low capacity watermarks, when capacity
@@ -187,7 +189,7 @@ init({Broker, Module, #{low := LW, high := HW}}) ->
     erlang:monitor(process, Broker),
     ?dbg("requesting ~b ~s from ~p", [HW, Module, Broker]),
     %% not planning to cancel the order
-    _ = lambda_broker:buy(Broker, Module, HW),
+    _ = lambda_broker:buy(Broker, Module, HW, #{version => any}),
     {ok, #lambda_plb_state{module = Module,
         queue = proc_lib:spawn_link(fun queue/0),
         broker = Broker,
@@ -203,8 +205,10 @@ handle_call(token, _From, #lambda_plb_state{capacity = Cap, index_to_pid = Itp} 
     % ?LOG_DEBUG("~p: giving token ~p", [_From, To]),
     {reply, To, State#lambda_plb_state{capacity = Cap - 1}};
 
-handle_call(module, _From, #lambda_plb_state{module = Mod} = State) ->
-    {reply, #{module => Mod, exports => [{pi, 1}], attributes => []}, State};
+handle_call(meta, From, #lambda_plb_state{meta = Waiting} = State) when is_list(Waiting) ->
+    {noreply, State#lambda_plb_state{meta = [From | Waiting]}};
+handle_call(meta, _From, #lambda_plb_state{meta = Meta} = State) ->
+    {reply, Meta, State};
 
 handle_call(capacity, _From, #lambda_plb_state{capacity = Cap} = State) ->
     {reply, Cap, State}.
@@ -256,11 +260,16 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
             end
     end;
 
+handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Module, meta = Waiting} = State) when is_list(Waiting) ->
+    ?dbg("meta ~200p received for ~200p", [Meta, Waiting]),
+    FullMeta = Meta#{module => Module},
+    [gen:reply(To, FullMeta) || To <- Waiting],
+    handle_info({order, Servers}, State#lambda_plb_state{meta = FullMeta});
 handle_info({order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
     ?dbg("plb servers: ~200p", [Servers]),
     Self = self(),
-    [erlang:send(Pid, {connect, Self, Cap}, [noconnect, nosuspend]) || {Pid, Cap} <- Servers],
+    [erlang:send(Pid, {connect, Self, Cap}, [noconnect, nosuspend]) || {Pid, Cap, _Meta} <- Servers],
     {noreply, State};
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_plb_state{pid_to_index = Pti, free = Free, capacity = Cap} = State) ->

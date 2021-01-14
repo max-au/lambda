@@ -107,6 +107,7 @@ peers(Authority, Peers) ->
 -spec init([]) -> {ok, state()}.
 init([]) ->
     Self = lambda_discovery:get_node(),
+    ?dbg("starting", []),
     {ok, #lambda_authority_state{self = Self}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->

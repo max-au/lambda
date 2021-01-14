@@ -110,7 +110,7 @@ trade(Config) when is_list(Config) ->
     ?assertEqual(ok, lambda_broker:buy(Reg, ?FUNCTION_NAME, Quantity)),
     %% receive the order
     receive
-        {order, [{Seller, Quantity}]} -> ok;
+        {order, [{Seller, Quantity, #{}}]} -> ok;
         Other -> ?assert(false, {"unexpected receive match", Other})
     after 2500 ->
         ?assert(false, "order was not executed in a timely fashion")

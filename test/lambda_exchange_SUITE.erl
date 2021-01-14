@@ -60,7 +60,7 @@ basic(Config) when is_list(Config) ->
     lambda_exchange:sell(?config(exchange, Config), contact, 0, Cap, #{}),
     lambda_exchange:buy(?config(exchange, Config), BuyId, Cap, #{}),
     receive
-        {order, BuyId, ?FUNCTION_NAME, [{contact, Cap}]} ->
+        {order, BuyId, ?FUNCTION_NAME, [{contact, Cap, #{}}]} ->
             ok;
         Other ->
             ?assert(false, Other)

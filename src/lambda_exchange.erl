@@ -7,8 +7,8 @@
 %%
 %% An exchange serves a single module.
 %%  Exchange orders:
-%%   - sell (broker, amount)
-%%   - buy (broker,  amount)
+%%   - sell (broker, Amount, Meta)
+%%   - buy (broker,  Amount, Meta)
 %%
 %%  Brokers send "sell" orders on server behalf. Broker is monitored by exchange
 %%   if it has any outstanding order. Orders from disconnected brokers are
@@ -17,7 +17,7 @@
 %%
 %% Exchange match algorithm considers:
 %%  * capacity
-%%  * failure domains [NOT IMPLEMENTED YET]
+%%  * failure domains [passed via meta, NOT IMPLEMENTED YET]
 %%  * previous allocations [NOT IMPLEMENTED YET]
 %%
 %% Exchange is started by an authority, if it does not have enough exchanges
@@ -38,7 +38,8 @@
 -export([
     start_link/1,
     sell/5,
-    buy/4
+    buy/4,
+    cancel/3
 ]).
 
 -behaviour(gen_server).
@@ -69,6 +70,9 @@ sell(Exchange, SellerContact, Id, Capacity, Meta) ->
 buy(Exchange, Id, Capacity, Meta) ->
     erlang:send(Exchange, {buy, Id, Capacity, self(), Meta}, [noconnect, nosuspend]).
 
+cancel(Exchange, Type, Id) ->
+    erlang:send(Exchange, {cancel, Type, Id, self()}, [noconnect, nosuspend]).
+
 %%--------------------------------------------------------------------
 %% gen_server implementation
 
@@ -76,7 +80,9 @@ buy(Exchange, Id, Capacity, Meta) ->
 -type sell_order() :: {
     Quantity :: non_neg_integer(),
     MRef :: reference(),
-    Contact :: {lambda_broker:location(), lambda_discovery:address()}
+    Id :: non_neg_integer(),
+    Contact :: {lambda_broker:location(), lambda_discovery:address()},
+    Meta :: lambda_broker:sell_meta()
 }.
 
 %% Buy order does not need to store contact (seller never contacts buyer)
@@ -84,7 +90,8 @@ buy(Exchange, Id, Capacity, Meta) ->
     Broker :: pid(),
     MRef :: reference(),
     Id :: non_neg_integer(),
-    Quantity :: pos_integer()
+    Quantity :: pos_integer(),
+    Meta :: lambda_broker:buy_meta()
 }.
 
 -record(lambda_exchange_state, {
@@ -98,7 +105,7 @@ buy(Exchange, Id, Capacity, Meta) ->
     buy = [] :: [buy_order()]
 }).
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: exchange " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -117,7 +124,7 @@ handle_call(_Req, _From, #lambda_exchange_state{}) ->
 handle_cast(_Req, _State) ->
     error(notsup).
 
-handle_info({buy, Id, Quantity, Broker, _Meta}, #lambda_exchange_state{module = Module, buy = Buy, sell = Sell} = State) ->
+handle_info({buy, Id, Quantity, Broker, Meta}, #lambda_exchange_state{module = Module, buy = Buy, sell = Sell} = State) ->
     %% match outstanding sales
     %% shortcut if there is anything for sale - to avoid monitoring new buyer
     case match(Broker, Module, Id, Quantity, Sell) of
@@ -129,30 +136,40 @@ handle_info({buy, Id, Quantity, Broker, _Meta}, #lambda_exchange_state{module = 
             %% out of capacity, put buy order in the queue
             ?dbg("got buy order from ~p for ~b (id ~b)", [Broker, Quantity, Id]),
             MRef = erlang:monitor(process, Broker),
-            {noreply, match_buy(State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining} | Buy], sell = NewSell})}
+            {noreply, match_buy(State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining, Meta} | Buy], sell = NewSell})}
     end;
 
-handle_info({sell, SellerContact, _Id, Quantity, Broker, _Meta}, #lambda_exchange_state{sell = Sell} = State) ->
+handle_info({sell, SellerContact, _Id, Quantity, Broker, Meta}, #lambda_exchange_state{sell = Sell} = State) ->
     Order =
         case maps:find(Broker, Sell) of
-            {ok, {_OldQ, MRef, SellerContact}} ->
+            {ok, {_OldQ, MRef, SellerContact, OldMeta}} ->
                 ?dbg("sell capacity update from ~p for ~b (id ~b)", [Broker, Quantity, _Id]),
-                {Quantity, MRef, SellerContact};
-            {ok, {_OldQ, MRef, _DiffSellerContact}} ->
-                ?dbg("sell BROKEN update from ~p for ~b (id ~b, contact: ~300p while expected ~300p)",
-                    [Broker, Quantity, _Id, _DiffSellerContact, SellerContact]),
-                {Quantity, MRef, SellerContact};
+                {Quantity, MRef, SellerContact, OldMeta};
             error ->
                 ?dbg("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, _Id, SellerContact]),
                 MRef = erlang:monitor(process, Broker),
-                {Quantity, MRef, SellerContact}
+                {Quantity, MRef, SellerContact, Meta}
         end,
     {noreply, match_buy(State#lambda_exchange_state{sell = Sell#{Broker => Order}})};
+
+handle_info({cancel, buy, Id, _Broker}, #lambda_exchange_state{buy = Buy} = State) ->
+    ?dbg("canceling buy order ~b from ~p", [Id, _Broker]),
+    NewBuy = lists:keydelete(Id, 4, Buy),
+    %% TODO: demonitor broker that has no orders left
+    {noreply, State#lambda_exchange_state{buy = NewBuy}};
+
+handle_info({cancel, sell, _Id, Broker}, #lambda_exchange_state{sell = Sell} = State) ->
+    ?dbg("canceling sell order ~b from ~p", [_Id, Broker]),
+    %% update remaining sellers map
+    NewSell = maps:remove(Broker, Sell),
+    %% TODO: demonitor broker that has no orders left
+    {noreply, State#lambda_exchange_state{sell = NewSell}};
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_exchange_state{sell = Sell, buy = Buy} = State) ->
     ?dbg("detected broker down ~p (reason ~200p)", [Pid, _Reason]),
     %% filter all buy orders. Can be slow, but this is a resource constrained situation already
-    NewBuy = [{Pid, MRef, Id, Quantity} || {Pid1, MRef, Id, Quantity} <- Buy, Pid =/= Pid1],
+    NewBuy = [{Pid1, MRef, Id, Quantity, Meta} || {Pid1, MRef, Id, Quantity, Meta} <- Buy, Pid =/= Pid1],
+    ?dbg("removed: ~200p ~200p", [Buy -- NewBuy, maps:get(Pid, Sell, [])]),
     {noreply, State#lambda_exchange_state{buy = NewBuy, sell = maps:remove(Pid, Sell)}}.
 
 %%--------------------------------------------------------------------
@@ -164,17 +181,18 @@ match_buy(#lambda_exchange_state{buy = []} = State) ->
 match_buy(#lambda_exchange_state{sell = Sell} = State) when Sell =:= #{} ->
     %% no sell orders
     State;
-match_buy(#lambda_exchange_state{module = Module, buy = [{Broker, MRef, Id, Quantity} | More], sell = Sell} = State) ->
+match_buy(#lambda_exchange_state{module = Module, buy = [{Broker, MRef, Id, Quantity, Meta} | More], sell = Sell} = State) ->
     %% should be a match somewhere
     case match(Broker, Module, Id, Quantity, Sell) of
         {NewSell, 0} ->
             %% stop monitoring this broker reference
+            %% NB: there are more monitors, separately, for other orders, could be improved!
             erlang:demonitor(MRef, [flush]),
             %% completed at full, continue
             match_buy(State#lambda_exchange_state{buy = More, sell = NewSell});
         {NewSell, Remaining} ->
             %% out of capacity, keep the order in the queue
-            State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining} | More], sell = NewSell}
+            State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining, Meta} | More], sell = NewSell}
     end.
 
 %% Finds full or partial match and replies to buyer's Broker if any match is found
@@ -188,8 +206,8 @@ match(Broker, Module, Id, Quantity, Sell) ->
             complete_order(Broker, Module, Id, Selected),
             %% update remaining sellers map
             NewSell = lists:foldl(
-                fun ({S, _, Q}, Sellers) ->
-                    maps:update_with(S, fun ({OQ, OM, Contact}) -> {OQ - Q, OM, Contact} end, Sellers)
+                fun ({S, _, Q, _M}, Sellers) ->
+                    maps:update_with(S, fun ({OQ, OM, Contact, Meta}) -> {OQ - Q, OM, Contact, Meta} end, Sellers)
                 end, Sell, Selected),
             {NewSell, Remain}
     end.
@@ -197,16 +215,16 @@ match(Broker, Module, Id, Quantity, Sell) ->
 %% Selects first N sellers with non-zero orders outstanding
 select(none, Remain, Selected) ->
     {Selected, Remain};
-select({Broker, {Q, _MRef, Contact}, _Next}, Remain, Selected) when Remain =< Q ->
-    {[{Broker, Contact, Remain} | Selected], 0};
-select({_Broker, {0, _MRef, _Contact}, Next}, Remain, Selected) ->
+select({Broker, {Q, _MRef, Contact, Meta}, _Next}, Remain, Selected) when Remain =< Q ->
+    {[{Broker, Contact, Remain, Meta} | Selected], 0};
+select({_Broker, {0, _MRef, _Contact, _Meta}, Next}, Remain, Selected) ->
     %% skip zero
     select(maps:next(Next), Remain, Selected);
-select({Broker, {Q, _MRef, Contact}, Next}, Remain, Selected) ->
+select({Broker, {Q, _MRef, Contact, Meta}, Next}, Remain, Selected) ->
     %% continue picking non-zero
-    select(maps:next(Next), Remain - Q, [{Broker, Contact, Q} | Selected]).
+    select(maps:next(Next), Remain - Q, [{Broker, Contact, Q, Meta} | Selected]).
 
 complete_order(To, Module, Id, Sellers) ->
-    NoBroker = [{Contact, Quantity} || {_, Contact, Quantity} <- Sellers],
-    ?dbg("responding to buyer's broker ~p for ~s (id ~b, sellers ~200p)", [To, Module, Id, NoBroker]),
+    NoBroker = [{Contact, Quantity, Meta} || {_, Contact, Quantity, Meta} <- Sellers],
+    ?dbg("responding to buyer's broker ~p for ~s (id ~b, sellers ~200P)", [To, Module, Id, NoBroker, 10]),
     To ! {order, Id, Module, NoBroker}.
