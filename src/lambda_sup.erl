@@ -57,7 +57,7 @@ init([]) ->
     DefaultBoot = if Authority -> node();
                       true ->
                           {ok, Host} = inet:gethostname(),
-                          list_to_atom(lists:concat(["authority", "@", Host]))
+                          list_to_atom(lists:concat(["authority", "@", Host, domain(net_kernel:longnames())]))
                   end,
     DynBoot = application:get_env(App, bootspec, [{static, [DefaultBoot]}]),
     BootSpec = [
@@ -109,3 +109,14 @@ check_plb_mod({Mod, Options}) when is_atom(Mod), is_map(Options) ->
     {Mod, Options};
 check_plb_mod(Other) ->
     erlang:error({invalid_module_spec, Other}).
+
+domain(true) ->
+    domain(inet_db:res_option(domain));
+domain(ignored) ->
+    domain(inet_db:res_option(domain));
+domain(false) ->
+    "";
+domain([]) ->
+    "";
+domain(Domain) ->
+    [$. | Domain].

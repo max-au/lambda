@@ -48,14 +48,16 @@ basic() ->
     [{doc, "Basic test starting extra node, publishing/discovering lambda and running it remotely"}].
 
 basic(Config) when is_list(Config) ->
-    %% Server: publish calc
     {ok, Host} = inet:gethostname(),
-    SrvNode = list_to_atom(lists:concat([authority, "@", Host])),
+    %% Prefer longnames (for 'peer' does it too)
+    SrvNode = list_to_atom(lists:concat([authority, "@", Host,
+        case inet_db:res_option(domain) of [] -> ""; Domain -> [$. | Domain] end])),
     {ok, Server} = peer:start_link(#{connection => standard_io, node => SrvNode,
         args => ["-lambda", "authority", "true"]}),
     %% local calc module into Server (module does not exist on disk)
     {module, calc} = peer:apply(Server, code, load_binary, [calc, nofile, calc()]),
     ok = peer:apply(Server, application, start, [lambda]),
+    %% Server: publish calc
     {ok, _Srv} = peer:apply(Server, lambda, publish, [calc]),
     %% Client: discover calc (using epmd)
     {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),

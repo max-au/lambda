@@ -58,7 +58,7 @@ start_link([_ | _] = Subs, Bootspec) ->
 
 -type state() :: #lambda_bootstrap_state{}.
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: bootstrap " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -90,6 +90,7 @@ handle_resolve(#lambda_bootstrap_state{bootstrap = Prev, spec = Spec, subscriber
         Prev ->
             reschedule(State);
         New ->
+            ?dbg("resolved ~p for ~p into ~200p", [Spec, Subs, Prev]),
             %% notify subscribers of changes, TODO: make diff Prev/New
             [gen_server:cast(Sub, {peers, New}) || Sub <- Subs],
             reschedule(State#lambda_bootstrap_state{bootstrap = New})

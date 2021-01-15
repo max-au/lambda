@@ -168,7 +168,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
             {noreply, State#lambda_broker_state{
                 orders = Orders#{Module => NewOut}}};
         error ->
-            ?dbg("~s ~b ~s for ~p", [Type, Quantity, Module, Trader]),
+            ?dbg("~s ~b ~s for ~p (exchanges: ~p)", [Type, Quantity, Module, Trader, Exchanges]),
             %% monitor seller
             MRef = erlang:monitor(process, Trader),
             NewMons = Monitors#{Trader => {Type, Module, MRef}},
