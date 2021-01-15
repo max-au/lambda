@@ -145,7 +145,6 @@ cancel(Srv, Proc) ->
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    %% bootstrap discovery: attempt to find authorities
     Self = lambda_discovery:get_node(),
     {ok, #lambda_broker_state{self = Self}}.
 
@@ -263,8 +262,11 @@ handle_info({'DOWN', _Mref, process, Pid, _Reason}, #lambda_broker_state{authori
 %%  hits the client instead. Send a list of known authorities to the client.
 handle_info({discover, Peer, _Port}, #lambda_broker_state{authority = Authority} = State) when is_pid(Peer) ->
     Peer ! {authority, maps:values(Authority)},
-    {noreply, State}.
+    {noreply, State};
 
+%% Discovery retry: when there are no authorities known, attempt to discover some
+handle_info(discover, #lambda_broker_state{authority = Authority} = State) when Authority =:= #{} ->
+    {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% Internal implementation

@@ -18,7 +18,7 @@ fib(N) when N > 0 ->
     fib(N - 1) + fib(N - 2).
 ```
 
-Start a `rebar3 shell --sname back`, compile `calc` and publish it:
+Start an authority node: `ERL_FLAGS="-lambda authority true" rebar3 shell --name authority`, compile `calc` and publish it:
 ```
     Eshell V11.1.5  (abort with ^G)
     (back@max-au)1> ===> Booted lambda
@@ -27,7 +27,7 @@ Start a `rebar3 shell --sname back`, compile `calc` and publish it:
     (back@max-au)2> lambda:publish(calc).
     ok
 ```
-Start another shell, `rebar3 shell --sname front`, discover `calc` and execute `fib(20)` remotely:
+Start another shell, `rebar3 shell --name front`, discover `calc` and execute `fib(20)` remotely:
 ```
     Eshell V11.1.5  (abort with ^G)
     (front@max-au)1> ===> Booted lambda
@@ -37,13 +37,15 @@ Start another shell, `rebar3 shell --sname front`, discover `calc` and execute `
     6765.
     ok
 ```
-To verify that `back` node was processing the call, add side effect, and recompile:
+To verify that `authority` node was processing the call, add side effect, and recompile:
 ```
-    fib(1) -> io:format("Side effect~n"), 1;
+    fib(0) -> io:format("Node: ~s~n", [node()]), 1;
 ...
     (back@max-au)1> c("/tmp/calc.erl").
     {ok,calc}
 ```
+
+Add more processing capacity by simply starting another node `rebar3 shell --name more`.
 
 ## Advanced Example
 

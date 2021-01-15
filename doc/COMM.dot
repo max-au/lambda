@@ -1,0 +1,56 @@
+digraph G {
+  rankdir=LR
+  node [shape=plaintext]
+  subgraph cluster_01 {
+    label = "Legend";
+    key [label=<<table border="0" cellpadding="2" cellspacing="0" cellborder="0">
+    <tr><td align="right" port="i1">item 1</td></tr>
+    <tr><td align="right" port="i2">item 2</td></tr>
+    <tr><td align="right" port="i3">item 3</td></tr>
+    <tr><td align="right" port="i4">item 4</td></tr>
+    </table>>]
+    key2 [label=<<table border="0" cellpadding="2" cellspacing="0" cellborder="0">
+    <tr><td port="i1">&nbsp;</td></tr>
+    <tr><td port="i2">&nbsp;</td></tr>
+    <tr><td port="i3">&nbsp;</td></tr>
+    <tr><td port="i4">&nbsp;</td></tr>
+    </table>>]
+    key:i1:e -> key2:i1:w [style=dashed, label = "request"]
+    key:i2:e -> key2:i2:w [color=red, label = "DOWN"]
+    key:i3:e -> key2:i3:w [color=peachpuff3]
+    key:i4:e -> key2:i4:w [color=turquoise4, style=dotted]
+  }
+
+    bootstrap [shape = box];
+    bootstrap -> bootstrap [label = "timer"];
+    bootstrap -> authority [label = "bootstrap"];
+    bootstrap -> broker [label = "bootstrap"];
+
+    authority [shape = box];
+    authority -> authority [label = "discover"];
+    authority -> broker [label = "exchange"];
+    authority -> broker [label = "DOWN", color = red];
+    authority -> authority [label = "DOWN", color = red];
+
+    exchange [shape = box];
+    exchange -> broker [label = "sellers"];
+
+    broker [shape = box];
+    broker -> authority [label = "discover", color = blue];
+    broker -> authority [label = "exchange", color = blue];
+    broker -> authority [color = red];
+    broker -> exchange [label = "order"];
+    broker -> exchange [label = "cancel order"];
+    broker -> exchange [color = red];
+    broker -> plb [label = "order"];
+
+    plb [shape = box];
+    plb -> broker [label = "buy"];
+    plb -> code [label = "token"]
+
+    server [shape = box];
+    server -> broker [label = "sell"];
+
+    code [label = "user code"];
+    code -> plb [label = "token"];
+}

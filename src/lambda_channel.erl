@@ -100,9 +100,9 @@ handle_info({started, Worker}, #lambda_channel_state{in_flight = InFlight} = Sta
     erlang:monitor(process, Worker),
     {noreply, State#lambda_channel_state{in_flight = InFlight + 1}};
 
-handle_info({'DOWN', _MRef, process, Client, _Reason}, #lambda_channel_state{to = Client}) ->
+handle_info({'DOWN', _MRef, process, Client, _Reason}, #lambda_channel_state{to = Client} = State) ->
     ?dbg("client ~p disconnected, ~200p", [Client, _Reason]),
-    {stop, normal};
+    {stop, normal, State};
 
 handle_info({'DOWN', _MRef, process, _Worker, _Reason}, #lambda_channel_state{in_flight = InFlight, total = Total} = State) ->
     ?dbg("worker ~p terminated, ~200p", [_Worker, _Reason]),
