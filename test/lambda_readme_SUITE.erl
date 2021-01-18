@@ -12,7 +12,9 @@
 
 %% Test cases exports
 -export([
-    basic/0, basic/1
+    basic/0, basic/1,
+    remote_stateless_update/0, remote_stateless_update/1,
+    remote_api_update/0, remote_api_update/1
 ]).
 
 -include_lib("common_test/include/ct.hrl").
@@ -58,12 +60,39 @@ basic(Config) when is_list(Config) ->
     {module, calc} = peer:apply(Server, code, load_binary, [calc, nofile, calc()]),
     ok = peer:apply(Server, application, start, [lambda]),
     %% Server: publish calc
-    {ok, _Srv} = peer:apply(Server, lambda, publish, [calc]),
+    {ok, _Srv} = peer:apply(Server, lambda, publish, [calc, #{capacity => 2}]),
     %% Client: discover calc (using epmd)
     {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
     ok = peer:apply(Client, application, start, [lambda]),
-    {ok, _Plb} = peer:apply(Client, lambda, discover, [calc]),
+    {ok, Plb} = peer:apply(Client, lambda, discover, [calc, #{capacity => 10}]),
     %% Execute calc remotely (on the client)
     ?assertEqual(3.14, peer:apply(Client, calc, pi, [2])),
+    %% continue with capacity expansion
+    %% run another server with more capacity
+    {ok, Srv2} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
+    ok = peer:apply(Srv2, application, start, [lambda]),
+    {module, calc} = peer:apply(Srv2, code, load_binary, [calc, nofile, calc()]),
+    {ok, _Srv2Srv} = peer:apply(Srv2, lambda, publish, [calc, #{capacity => 2}]),
+    %% ensure that client got more capacity
+    ?assertEqual(4, peer:apply(Client, lambda_plb, capacity, [Plb])),
     %% Shutdown
     peer:stop(Server).
+
+remote_stateless_update() ->
+    [{doc, "Update stateless code on a remote tier"}].
+
+%% This test simulates a deployment routine: developer creates new version of
+%%  code and submits it to the repository. It triggers new release build, which
+%%  then gets delivered to lambda-supported tier, and gets hot-loaded.
+remote_stateless_update(Config) when is_list(Config) ->
+    ok.
+
+remote_api_update() ->
+    [{doc, "Update API of a remote tier"}].
+
+%% This test simulates a deployment routine: developer changes export spec of a
+%%  remotely executed module. In order to perform safe upgrade, lambda needs to
+%%  ensure that no calls to old APIs are made, and only then perform hot code
+%%  upgrade.
+remote_api_update(Config) when is_list(Config) ->
+    ok.

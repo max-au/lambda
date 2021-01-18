@@ -74,13 +74,13 @@ pi(Precision) ->
     pi(4, -4, 3, Precision).
 
 pi(LastResult, Numerator, Denominator, Precision) ->
-    NextResult = LastResult + Numerator/Denominator,
+    NextResult = LastResult + Numerator / Denominator,
     Pow = math:pow(10, Precision),
     case trunc(LastResult * Pow) =:= trunc(NextResult * Pow) of
         true ->
-            trunc(NextResult*Pow)/Pow;
+            trunc(NextResult * Pow) / Pow;
         false ->
-            pi(NextResult, -1*Numerator, Denominator+2, Precision)
+            pi(NextResult, -1 * Numerator, Denominator+2, Precision)
     end.
 
 sleep(Time) ->

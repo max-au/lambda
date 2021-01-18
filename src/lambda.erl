@@ -7,32 +7,34 @@
 %% API
 -export([
     publish/1,
-    discover/1
+    publish/2,
+    discover/1,
+    discover/2
 ]).
-
--type meta() :: #{
-    md5 := binary(),
-    exports := [{atom(), pos_integer()}],
-    attributes => [term()]
-}.
-
--export_type([meta/0]).
 
 %%--------------------------------------------------------------------
 %% @doc Discovers a module, and starts a PLB for that module under lambda supervision.
 -spec discover(module()) -> {ok, pid()} | ignore.
 discover(Module) ->
+    discover(Module, #{capacity => erlang:system_info(schedulers)}).
+
+-spec discover(module(), lambda_plb:options()) -> {ok, pid()} | ignore.
+discover(Module, Options) ->
     case erlang:module_loaded(Module) of
         true ->
             %% module is available locally
             ignore;
         false ->
-            {ok, Plb} = lambda_plb_sup:start_plb(Module, #{low => 1, high => 10}),
-            Module = lambda_plb:compile(Plb),
+            {ok, Plb} = lambda_plb_sup:start_plb(Module, Options),
+            _ = lambda_plb:meta(Plb),
             {ok, Plb}
     end.
 
 %% @doc Publishes  a module, starting server under lambda supervision.
 -spec publish(module()) -> gen:start_ret().
 publish(Module) ->
-    lambda_server_sup:start_server(Module, #{capacity => 10}).
+    publish(Module, #{capacity => erlang:system_info(schedulers)}).
+
+-spec publish(module(), lambda_server:options()) -> gen:start_ret().
+publish(Module, Options) ->
+    lambda_server_sup:start_server(Module, Options).

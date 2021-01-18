@@ -7,75 +7,79 @@ Modern network applications implement 3-layer design:
 Lambda provides an implementation of a scalable stateless compute tier in Erlang.
 
 ## Basic Example
-Put the code below (an Erlang module `calc` exporting Fibonacci function) into any temporary directory.
+This example requires at least a 4-core CPU, or running over a network. Put the code below (an Erlang 
+module `calc` exporting Pi calculation) into any temporary directory.
 ```erlang
 -module(calc).
--export([fib/1]).
+-export([pi/1]).
 
-fib(0) -> 0;
-fib(1) -> 1;
-fib(N) when N > 0 ->
-    fib(N - 1) + fib(N - 2).
+pi(Precision) ->
+    pi(4, -4, 3, Precision).
+
+pi(LastResult, Numerator, Denominator, Precision) ->
+    NextResult = LastResult + Numerator / Denominator,
+    Pow = math:pow(10, Precision),
+    case trunc(LastResult * Pow) =:= trunc(NextResult * Pow) of
+        true ->
+            trunc(NextResult * Pow) / Pow;
+        false ->
+            pi(NextResult, -1 * Numerator, Denominator+2, Precision)
+    end.
 ```
 
-Start an authority node: `ERL_FLAGS="-lambda authority true" rebar3 shell --name authority`, compile `calc` and publish it:
+Start an authority node: `ERL_FLAGS="-lambda authority true" rebar3 shell --name authority`, compile `calc` and 
+publish it with small capacity:
 ```
-    Eshell V11.1.5  (abort with ^G)
-    (back@max-au)1> ===> Booted lambda
+    (authority@max-au)1> ===> Booted lambda
     c("/tmp/calc.erl").
     {ok,calc}
-    (back@max-au)2> lambda:publish(calc).
+    (authority@max-au)2> lambda:publish(calc, #{capacity => 2}).
     ok
 ```
-Start another shell, `rebar3 shell --name front`, discover `calc` and execute `fib(20)` remotely:
+Start another shell, `rebar3 as test shell --name front`, discover `calc` and execute `pi(5)` remotely:
 ```
-    Eshell V11.1.5  (abort with ^G)
     (front@max-au)1> ===> Booted lambda
     lambda:discover(calc).
     ok
-    (front@max-au)2> calc:fib(20).
+    (front@max-au)2> calc:pi(5).
     6765.
     ok
 ```
-To verify that `authority` node was processing the call, add side effect, and recompile:
+Use `erlperf` to verify maximum concurrency of 2: 
 ```
-    fib(0) -> io:format("Node: ~s~n", [node()]), 1;
-...
-    (back@max-au)1> c("/tmp/calc.erl").
-    {ok,calc}
+    (front@max-au)1> application:start(erlperf).
+    ok
+    (front@max-au)6> erlperf:run({calc, pi, [4]}, #{}, #{}).                      
+    {166,2}
 ```
+Output above means that `erlperf` detected total throughput of 166 `pi` calls per second, while running 2 concurrent
+processes (matching capacity published from `authority` node).
 
-Add more processing capacity by simply starting another node `rebar3 shell --name more`.
+Add more processing capacity by simply starting another node `rebar3 shell --name more`:
+```
+    (more@max-au)1> c("/tmp/calc.erl").
+    {ok,calc}
+    (more@max-au)2> lambda:publish(calc, #{capacity => 2}).
+    ok
+```
+Ensure `front` received more capacity:
+```
+    (front@max-au)6> erlperf:run({calc, pi, [4]}, #{}, #{}).                      
+    {316,4}
+```
 
 ## Advanced Example
+[See Math - scalable 3-tier application](doc/MATH.md).
 
-### Backend
-Create a new Erlang application using `rebar3 new app backend` and add `calc.erl` from the basic example.
-Define `lambda` as a dependency of `backend` in `backend.app.src`:
+## Use cases
+Primary lambda use-case is to enable remote code execution, and support remote tier lifecycle. It includes but
+not limited to:
+ * moving a local call to remote tier
+ * updating remote tier code via hot code load
+ * safe API update and deployment, supporting hot code upgrade
 
-
-Add `relx` release definition to `rebar.config`:
-
-### Frontend
-Create another release `frontend`, also depending on `lambda`, and implementing basic web server:
-
-Frontend release does not contain any backend code at all.
-
-
-Additional examples [available](doc/examples/BASIC.md).
-
-## Design & Implementation
-
-### Terminology
-* *Node*. Instance of Erlang Run Time System (ERTS) running in a distributed
-environment.
-* *Process*. Erlang process running on a single node.
-* *Server*.
-* *Channel*.
-* *PLB*.
-* *Broker*.
-* *Authority*.
-* *Exchange*.
+## Design
+[See DESIGD.md](doc/DESIGN.md)
 
 ## API
 Public API is provided via `lambda` module.

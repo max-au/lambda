@@ -17,7 +17,7 @@ digraph G {
     </table>>]
     key:i1:e -> key2:i1:w [style=dashed, label = "request"]
     key:i2:e -> key2:i2:w [color=red, label = "DOWN"]
-    key:i3:e -> key2:i3:w [color=peachpuff3]
+    key:i3:e -> key2:i3:w [color=peachpuff3, labe = "response"]
     key:i4:e -> key2:i4:w [color=turquoise4, style=dotted]
   }
 
@@ -28,6 +28,7 @@ digraph G {
 
     authority [shape = box];
     authority -> authority [label = "discover"];
+    authority -> authority [label = "authority"];
     authority -> broker [label = "exchange"];
     authority -> broker [label = "DOWN", color = red];
     authority -> authority [label = "DOWN", color = red];
@@ -46,11 +47,17 @@ digraph G {
 
     plb [shape = box];
     plb -> broker [label = "buy"];
-    plb -> code [label = "token"]
+    plb -> server [label = "connect"];
+    plb -> code [label = "token"];
 
     server [shape = box];
     server -> broker [label = "sell"];
 
-    code [label = "user code"];
+    channel [shape = box];
+    channel -> code [label = "reply"];
+    channel -> plb [label = "demand"];
+
+    code [label = "module", shape = "box"];
     code -> plb [label = "token"];
+    code -> channel [label = "request"];
 }

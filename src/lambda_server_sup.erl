@@ -19,6 +19,7 @@
 
 -spec start_server(module(), lambda_server:options()) -> ok.
 start_server(Mod, Options) ->
+    {module, Mod} = code:ensure_loaded(Mod),
     supervisor:start_child(?MODULE, mod_spec(Mod, Options)).
 
 -spec start_link(Mods :: [{module(), pos_integer()}]) -> supervisor:startlink_ret().

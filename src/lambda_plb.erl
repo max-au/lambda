@@ -14,13 +14,12 @@
 
 %% API
 -export([
-    start_link/2,
     start_link/3,
 
-    compile/1,
     cast/4,
     call/4,
-    capacity/1
+    capacity/1,
+    meta/1
 ]).
 
 -behaviour(gen_server).
@@ -41,24 +40,23 @@
 %% Options for this plb (module).
 -type options() :: #{
     %% capacity to request from all servers combined
-    high := non_neg_integer(),
-    %% level at which the client is no longer healthy
-    low := pos_integer(),
+    capacity := non_neg_integer(),
     %% local broker process (lambda_broker by default)
     broker => gen:emgr_name()
 }.
 
+-type meta() :: #{
+    md5 := binary(),
+    exports := [{atom(), pos_integer()}],
+    attributes => [term()]
+}.
+
+-export_type([meta/0, options/0]).
+
+
 -include_lib("kernel/include/logger.hrl").
 
 %%--------------------------------------------------------------------
-%% @doc
-%% Starts the server and links it to calling process.
-%% Uses default watermark settings, which is 1 for low watermark, and
-%%  1000 for high.
--spec start_link(gen:emgr_name(), module()) -> gen:start_ret().
-start_link(Broker, Module) when is_atom(Module) ->
-    start_link(Broker, Module, #{low => 10, high => 1000}).
-
 %% @doc
 %% Starts the server and links it to calling process.
 -spec start_link(gen:emgr_name(), module(), options()) -> gen:start_ret().
@@ -67,22 +65,6 @@ start_link(Broker, Module, Options) when is_atom(Module) ->
 
 %%--------------------------------------------------------------------
 %% API
-
-%% @doc Waits until PLB discovers the module, and compiles proxy module.
--spec compile(gen:emgr_name()) -> ok.
-compile(Srv) ->
-    #{module := Module, exports := Exports, attributes := Attrs} = gen_server:call(Srv, meta),
-    %% create a module (technically possible to make an AST, but for compatibility
-    %%  reasons it's better to use text lines for compilation)
-    ExpLine = "-export([" ++ lists:flatten(lists:join(", ", [io_lib:format("~s/~b", [F, A]) || {F, A} <- Exports])) ++ "]).",
-    Impl = [proxy(Module, F, A, Attrs) || {F, A} <- Exports],
-    Lines = ["-module(" ++ atom_to_list(Module) ++ ").", ExpLine] ++ Impl,
-    %% compile resulting proxy file
-    Tokens = [begin {ok, T, _} = erl_scan:string(L), T end || L <- Lines],
-    Forms = [begin {ok, F} = erl_parse:parse_form(T), F end || T <- Tokens],
-    {ok, Module, Binary} = compile:forms(Forms),
-    {module, Module} = code:load_binary(Module, lambda, Binary),
-    Module.
 
 %% @doc Starts a request on a node selected with weighted random
 %%      sampling. May block if no capacity left.
@@ -124,6 +106,12 @@ call(M, F, A, Timeout) ->
 capacity(Module) ->
     gen_server:call(Module, capacity).
 
+%% @doc Waits until PLB discovers the module, compiles proxy module and
+%%      returns meta information.
+-spec meta(gen:emgr_name()) -> module().
+meta(Srv) ->
+    gen_server:call(Srv, meta, infinity).
+
 %%--------------------------------------------------------------------
 %% Weighted random sampling: each server process has a weight.
 %% Fast selection implemented with Ryabko array, also known as Fenwick
@@ -146,13 +134,7 @@ capacity(Module) ->
     meta = [] :: [{pid(), reference()}] | lambda:meta(),
     %% current capacity, needed for quick reject logic
     capacity = 0 :: non_neg_integer(),
-    %% high/low capacity watermarks, when capacity
-    %%  falls below or raises above specified number,
-    %%  an event is emitted (currently gen_event named 'lambda_events')
-    %% When capacity falls below low_watermark,
-    %%  {low_watermark, Module, Capacity} is emitted.
-    %% When capacity rises above, {high_watermark, Module, Capacity}
-    low :: non_neg_integer(),
+    %% high/low capacity watermarks
     high :: pos_integer(),
     %% connected servers, maps pid to an index & expected capacity
     pid_to_index = #{} :: #{pid() => {Index :: non_neg_integer(), Capacity :: non_neg_integer()}},
@@ -182,7 +164,7 @@ capacity(Module) ->
 -endif.
 
 -spec init({Module :: atom(), Options :: options()}) -> {ok, state()}.
-init({Broker, Module, #{low := LW, high := HW}}) ->
+init({Broker, Module, #{capacity := HW}}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
     %% monitor the broker (and reconnect if it restarts)
@@ -193,7 +175,7 @@ init({Broker, Module, #{low := LW, high := HW}}) ->
     {ok, #lambda_plb_state{module = Module,
         queue = proc_lib:spawn_link(fun queue/0),
         broker = Broker,
-        low = LW, high = HW}}.
+        high = HW}}.
 
 handle_call(token, _From, #lambda_plb_state{capacity = 0, queue = Queue} = State) ->
     % ?LOG_DEBUG("~p: no capacity: sending to queue ~p", [_From, Queue]),
@@ -262,9 +244,9 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
 
 handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Module, meta = Waiting} = State) when is_list(Waiting) ->
     ?dbg("meta ~200p received for ~200p", [Meta, Waiting]),
-    FullMeta = Meta#{module => Module},
-    [gen:reply(To, FullMeta) || To <- Waiting],
-    handle_info({order, Servers}, State#lambda_plb_state{meta = FullMeta});
+    Module = compile_proxy(Module, Meta),
+    [gen:reply(To, Meta) || To <- Waiting],
+    handle_info({order, Servers}, State#lambda_plb_state{meta = Meta});
 handle_info({order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
     ?dbg("plb servers: ~200p", [Servers]),
@@ -357,6 +339,21 @@ take_bound(Bound, Idx, Mask) ->
         Right ->
             take_bound(Right, Idx + Mask, Mask bsr 1)
     end.
+
+%% @private creates proxy, dynamically, when meta has been received for the first time.
+compile_proxy(Module, Meta) ->
+    #{exports := Exports, attributes := Attrs} = Meta,
+    %% create a module (technically possible to make an AST, but for compatibility
+    %%  reasons it's better to use text lines for compilation)
+    ExpLine = "-export([" ++ lists:flatten(lists:join(", ", [io_lib:format("~s/~b", [F, A]) || {F, A} <- Exports])) ++ "]).",
+    Impl = [proxy(Module, F, A, Attrs) || {F, A} <- Exports],
+    Lines = ["-module(" ++ atom_to_list(Module) ++ ").", ExpLine] ++ Impl,
+    %% compile resulting proxy file
+    Tokens = [begin {ok, T, _} = erl_scan:string(L), T end || L <- Lines],
+    Forms = [begin {ok, F} = erl_parse:parse_form(T), F end || T <- Tokens],
+    {ok, Module, Binary} = compile:forms(Forms),
+    {module, Module} = code:load_binary(Module, "lambda", Binary),
+    Module.
 
 proxy(M, F, Arity, _Attrs) ->
     Args = lists:join(", ", ["Arg" ++ integer_to_list(Seq) || Seq <- lists:seq(1, Arity)]),
