@@ -119,7 +119,7 @@ resolve_epmd([Node | Tail], Acc) when Node =:= node() ->
 resolve_epmd([Node | Tail], Acc) ->
     try
         [Name, Host] = string:split(atom_to_list(Node), "@", all),
-        {ok, #hostent{ h_addr_list = [Ip | _]}} = inet:gethostbyname(Host),
+        {ok, #hostent{ h_addr_list = [Ip | _]}} = inet_res:gethostbyname(Host),
         {port, Port, _Version} =
             try erl_epmd:port_please(Name, Ip)
             catch error:undef -> erl_epmd_ORIGINAL:port_please(Name, Ip) end,

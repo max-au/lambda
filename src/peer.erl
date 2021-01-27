@@ -582,7 +582,14 @@ command_line(Listen, Options) ->
     %% long/short names
     NameArg = name_arg(maps:find(node, Options), maps:find(longnames, Options)),
     %% additional command line args
-    CmdOpts = maps:get(args, Options, []),
+    CmdOpts0 = maps:get(args, Options, []),
+    CmdOpts =
+        case lists:member("--setcookie", CmdOpts0) of
+            true ->
+                CmdOpts0;
+            false ->
+                ["-setcookie", atom_to_list(erlang:get_cookie()) | CmdOpts0]
+        end,
     % start command
     StartCmd =
         case Listen of
@@ -607,7 +614,13 @@ command_line(Listen, Options) ->
                 []
         end,
     %% command line: build
-    {"erl", NameArg ++ StartCmd ++ CodePath ++ CmdOpts}.
+    %% BINDIR environment variable is already set
+    %% EMU variable it also set
+    Root = code:root_dir(),
+    Erts = filename:join(Root, lists:concat(["erts-", erlang:system_info(version)])),
+    BinDir = filename:join(Erts, "bin"),
+    ErlExec = filename:join(BinDir, "erlexec"),
+    {ErlExec, NameArg ++ StartCmd ++ CodePath ++ CmdOpts}.
 
 longnames() ->
     case net_kernel:longnames() of

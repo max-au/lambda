@@ -1,18 +1,19 @@
 {application, lambda,
- [{description, "Lambda: local function made remote"},
-  {vsn, "0.1.0"},
-  {registered, [lambda_sup, lambda_bootstrap, lambda_authority, lambda_broker, lambda_discovery]},
-  {mod, {lambda_app, []}},
-  {applications,
-   [kernel,
-    stdlib
-   ]},
-  {env,[
-   %% {authority, false},
-   %% {broker, true},
-   %% {bootspec, ...} %% see lambda_bootstrap
-  ]},
+    [{description, "Lambda: local function made remote"},
+        {vsn, "0.1.0"},
+        {registered, [lambda_sup, lambda_bootstrap, lambda_authority, lambda_broker, lambda_discovery]},
+        {mod, {lambda_app, []}},
+        {applications,
+            [kernel,
+                stdlib,
+                compiler
+            ]},
+        {env, [
+            %% {authority, false},
+            %% {broker, true},
+            %% {bootspec, ...} %% see lambda_bootstrap
+        ]},
 
-  {licenses, ["BSD 3-clause clear"]},
-  {links, [{"GitHub", "https://github.com/max-au/lambda"}]}
- ]}.
+        {licenses, ["BSD 3-clause clear"]},
+        {links, [{"GitHub", "https://github.com/max-au/lambda"}]}
+    ]}.
