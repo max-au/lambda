@@ -52,7 +52,7 @@ end_per_suite(Config) ->
     Config.
 
 init_per_testcase(_TestCase, Config) ->
-    {ok, Lb} = lambda_plb:start_link(lambda_broker, ?MODULE),
+    {ok, Lb} = lambda_plb:start_link(lambda_broker, ?MODULE, #{capacity => 1000, compile => false}),
     [{lb, Lb} | Config].
 
 end_per_testcase(_TestCase, Config) ->
@@ -97,12 +97,10 @@ multi_echo(Count) ->
 
 make_node(Args, Capacity) ->
     Bootstrap = #{{lambda_authority, node()} => lambda_discovery:get_node()},
-    {Peer, Node} = lambda_test:start_node_link(Bootstrap, Args, false),
-    %% Peer will connect back to us at some point later, courtesy of lambda_broker and authority
-    SrvSpec = #{id => lambda_server, start => {lambda_server, start_link, [lambda_broker, ?MODULE, #{capacity => Capacity}]}},
-    {ok, Worker} = peer:apply(Peer, supervisor, start_child, [lambda_sup, SrvSpec]),
+    {Peer, _Node} = lambda_test:start_node_link(Bootstrap, Args, false),
+    {ok, Worker} = peer:apply(Peer, lambda, publish, [?MODULE, #{capacity => Capacity}]),
     unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
-    {Node, Peer, Worker, Capacity}.
+    {Peer, Worker}.
 
 wait_complete(Procs) when is_list(Procs) ->
     wait_complete(maps:from_list(Procs));
@@ -129,28 +127,34 @@ lb(Config) when is_list(Config) ->
     ClientConcurrency = 100,
     ?assertEqual(0, SampleCount rem ClientConcurrency),
     %% start worker nodes, when every next node has +1 more capacity
+    WorkIds = lists:seq(1, WorkerCount),
     Peers = lambda_async:pmap([{fun make_node/2, [["+S", integer_to_list(Seq)], Seq]}
-        || Seq <- lists:seq(1, WorkerCount)]),
+        || Seq <- WorkIds]),
+    %% check peers scheduler counts
+    WorkIds = lambda_async:pmap([{peer, apply, [P, erlang, system_info, [schedulers]]} || {P, _} <- Peers]),
+    %% expected result
+    Precalculated = pi(Precision),
     %% don't care about capacity waiting! this it the WHOLE IDEA!
     %% fire samples: spawn a process per request
     Spawned = [spawn_monitor(
-        fun () -> [lambda_plb:call(?MODULE, pi, [Precision], infinity) || _ <- lists:seq(1, SampleCount div ClientConcurrency)] end)
+        fun () -> [Precalculated = lambda_plb:call(?MODULE, pi, [Precision], infinity)
+            || _ <- lists:seq(1, SampleCount div ClientConcurrency)]
+        end)
         || _ <- lists:seq(1, ClientConcurrency)],
-    wait_complete(Spawned),
+    ok = wait_complete(Spawned),
     %% ensure weights and total counts expected
     TotalWeight = WorkerCount * (WorkerCount + 1) div 2,
-    WeightedCounts = [
-        begin
-            {0, Count} = gen_server:call(Worker, get_count, infinity),
+    {WorkerCount, WeightedCounts} = lists:foldl(
+        fun ({Peer, Worker}, {Idx, WC}) ->
+            {0, Count} = peer:apply(Peer, gen_server, call, [Worker, get_count]),
             ct:pal("Worker ~b/~b received ~b/~b~n",
-                [Seq, WorkerCount, Count, SampleCount * Seq div TotalWeight]),
-            {Seq, Count}
-        end  || {_, _Peer, Worker, Seq} <- Peers],
+                [Idx + 1, WorkerCount, Count, SampleCount * (Idx + 1) div TotalWeight]),
+            {Idx + 1, [{Idx + 1, Count} | WC]}
+        end, {0, []}, Peers),
     %% stop all peers concurrently
-    lambda_async:pmap([fun () -> peer:stop(P) end || {_, P, _, _} <- Peers]),
+    lambda_async:pmap([{peer, stop, [P]} || {P, _} <- Peers]),
     {_, Counts} = lists:unzip(WeightedCounts),
     ?assertEqual(SampleCount, lists:sum(Counts)),
-    %%
     [begin
         %% every server should have roughly it's share of samples
         Share = SampleCount * Seq div TotalWeight,
@@ -212,8 +216,8 @@ packet_loss(Config) when is_list(Config) ->
     Concurrency = 5,
     {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     %% sync broker + plb to ensure it received demand
-    Lb = ?config(lb, Config),
-    lambda_test:sync_via(Worker, ?config(broker, Config)), %% this flushes broker (order sent to plb)
+    Lb = proplists:get_value(lb, Config),
+    lambda_test:sync_via(Worker, proplists:get_value(broker, Config)), %% this flushes broker (order sent to plb)
     lambda_test:sync_via(Lb, Worker), %% this flushes plb and worker via plb
     ?assertEqual(Concurrency, lambda_plb:capacity(Lb)),
     %% waste all tokens, using white-box testing
@@ -236,8 +240,8 @@ throughput() ->
 
 throughput(Config) when is_list(Config) ->
     %% change the lb process priority to 'high', so it wins over any other processes
-    Lb = ?config(lb, Config),
-    Broker = ?config(broker, Config),
+    Lb = proplists:get_value(lb, Config),
+    Broker = proplists:get_value(broker, Config),
     sys:replace_state(Lb, fun(S) -> erlang:process_flag(priority, high), S end),
     %% start servers
     [measure(Lb, Broker, CapPerNode, Nodes) || CapPerNode <- [100, 200, 500, 1000], Nodes <- [1, 2, 4, 8, 32, 64, 128]].

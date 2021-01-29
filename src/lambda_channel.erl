@@ -97,6 +97,7 @@ handle_cast(_Request, _State) ->
     erlang:error(notsup).
 
 handle_info({started, Worker}, #lambda_channel_state{in_flight = InFlight} = State) ->
+    ?dbg("worker ~p started", [Worker]),
     erlang:monitor(process, Worker),
     {noreply, State#lambda_channel_state{in_flight = InFlight + 1}};
 

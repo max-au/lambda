@@ -58,23 +58,27 @@ basic(Config) when is_list(Config) ->
         args => ["-lambda", "authority", "true"]}),
     %% local calc module into Server (module does not exist on disk)
     {module, calc} = peer:apply(Server, code, load_binary, [calc, nofile, calc()]),
-    ok = peer:apply(Server, application, start, [lambda]),
+    {ok, _Apps} = peer:apply(Server, application, ensure_all_started, [lambda]),
     %% Server: publish calc
     {ok, _Srv} = peer:apply(Server, lambda, publish, [calc, #{capacity => 2}]),
     %% Client: discover calc (using epmd)
     {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
-    ok = peer:apply(Client, application, start, [lambda]),
+    {ok, _Apps} = peer:apply(Client, application, ensure_all_started, [lambda]),
     {ok, Plb} = peer:apply(Client, lambda, discover, [calc, #{capacity => 10}]),
     %% Execute calc remotely (on the client)
     ?assertEqual(3.14, peer:apply(Client, calc, pi, [2])),
     %% continue with capacity expansion
     %% run another server with more capacity
     {ok, Srv2} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
-    ok = peer:apply(Srv2, application, start, [lambda]),
+    {ok, _Apps} = peer:apply(Srv2, application, ensure_all_started, [lambda]),
     {module, calc} = peer:apply(Srv2, code, load_binary, [calc, nofile, calc()]),
     {ok, _Srv2Srv} = peer:apply(Srv2, lambda, publish, [calc, #{capacity => 2}]),
-    %% ensure that client got more capacity
-    ?assertEqual(4, peer:apply(Client, lambda_plb, capacity, [Plb])),
+    %% ideally should be a whitebox flushing queues of the involved parties
+    %% TODO: replace sleep with some capacity notification in PLB itself
+    timer:sleep(200),
+    %% ensure that client got more capacity: originally 2, 1 request executed,
+    %%  then 2 more left
+    ?assertEqual(3, peer:apply(Client, lambda_plb, capacity, [Plb])),
     %% Shutdown
     peer:stop(Server).
 

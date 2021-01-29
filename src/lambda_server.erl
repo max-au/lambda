@@ -106,7 +106,7 @@ handle_info({connect, To, Cap}, #lambda_server_state{module = Module, conns = Co
     {ok, Conn} = lambda_channel:start_link(To, Allowed),
     %% publish capacity update
     NewCap = Capacity - Cap,
-    lambda_broker:sell(Broker, Module, NewCap),
+    if NewCap =:= 0 -> lambda_broker:cancel(Broker, self()); true -> lambda_broker:sell(Broker, Module, NewCap) end,
     {noreply, State#lambda_server_state{capacity = NewCap, conns = Conns#{Conn => Cap}}}.
 
 %%--------------------------------------------------------------------

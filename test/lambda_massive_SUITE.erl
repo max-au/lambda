@@ -48,6 +48,17 @@ create_release(Priv) ->
     {ok, systools_make, []} = systools:make_script(Base, [silent, {outdir, Priv}, local]),
     Base.
 
+start_tier(Boot, Count, AuthorityCount) ->
+    lambda_async:pmap([
+        fun () ->
+            ExtraArgs = if Seq rem AuthorityCount =:= 1 -> ["-lambda", "authority", "true"]; true -> [] end,
+            {ok, Peer} = peer:start_link(#{node => peer:random_name(),
+                args => ["-boot", Boot | ExtraArgs], connection => standard_io}),
+            unlink(Peer),
+            Peer
+        end
+        || Seq <- lists:seq(1, Count)]).
+
 %%--------------------------------------------------------------------
 %% Test Cases
 
@@ -56,8 +67,10 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     Priv = proplists:get_value(priv_dir, Config),
-    Boot = create_release(Priv),
-    {ok, Auth} = peer:start_link(#{node => peer:random_name(), args => ["-boot", Boot], connection => standard_io}),
-    Authority = peer:apply(Auth, erlang, whereis, [lambda_authority]),
-    peer:stop(Auth),
+    %% start a tier, with several authorities
+    Peers = start_tier(create_release(Priv), 4, 2),
+    Authority = hd(peer:apply(hd(Peers), lambda_broker, authorities, [lambda_broker])),
+    %% TODO: ensure all nodes have correct view of the world
+    %% stop everything
+    lambda_async:pmap([{peer, stop, [P]} || P <- Peers]),
     ?assert(is_pid(Authority), {pid, Authority}).

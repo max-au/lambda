@@ -42,7 +42,9 @@
     %% capacity to request from all servers combined
     capacity := non_neg_integer(),
     %% local broker process (lambda_broker by default)
-    broker => gen:emgr_name()
+    broker => gen:emgr_name(),
+    %% disable automatic meta query/compilation
+    compile => false
 }.
 
 -type meta() :: #{
@@ -130,8 +132,11 @@ meta(Srv) ->
 -record(lambda_plb_state, {
     %% remember module name for event handler
     module :: module(),
-    %% meta: meta-information about currently loaded module
-    meta = [] :: [{pid(), reference()}] | lambda:meta(),
+    %% meta: meta-information about currently loaded module. When 'false',
+    %%  meta is not relevant, and no automatic compilation happens,
+    %%  when a list of {pid, ref} - list of processes waiting for PLB to
+    %%  receive meta
+    meta :: false | [{pid(), reference()}] | lambda:meta(),
     %% current capacity, needed for quick reject logic
     capacity = 0 :: non_neg_integer(),
     %% high/low capacity watermarks
@@ -164,7 +169,7 @@ meta(Srv) ->
 -endif.
 
 -spec init({Module :: atom(), Options :: options()}) -> {ok, state()}.
-init({Broker, Module, #{capacity := HW}}) ->
+init({Broker, Module, #{capacity := HW} = Options}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
     %% monitor the broker (and reconnect if it restarts)
@@ -174,6 +179,7 @@ init({Broker, Module, #{capacity := HW}}) ->
     _ = lambda_broker:buy(Broker, Module, HW, #{version => any}),
     {ok, #lambda_plb_state{module = Module,
         queue = proc_lib:spawn_link(fun queue/0),
+        meta = maps:get(compile, Options, []),
         broker = Broker,
         high = HW}}.
 
@@ -205,7 +211,7 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
     %%
     ServerCount = tuple_size(Itp),
     %%
-    % ?LOG_DEBUG("~p: received demand (~b) from ~p", [State#lambda_state.module, Demand, Server]),
+    ?dbg("received demand (~b) from ~p", [Demand, Server]),
     %% unblock the queue
     Cap =:= 0 andalso begin State#lambda_plb_state.queue ! unblock end,
     %%
@@ -249,9 +255,9 @@ handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Mo
     handle_info({order, Servers}, State#lambda_plb_state{meta = Meta});
 handle_info({order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
-    ?dbg("plb servers: ~200p", [Servers]),
+    ?dbg("found servers: ~200p", [Servers]),
     Self = self(),
-    [erlang:send(Pid, {connect, Self, Cap}, [noconnect, nosuspend]) || {Pid, Cap, _Meta} <- Servers],
+    [erlang:send(Pid, {connect, Self, Cap}, [nosuspend]) || {Pid, Cap, _Meta} <- Servers],
     {noreply, State};
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_plb_state{pid_to_index = Pti, free = Free, capacity = Cap} = State) ->

@@ -55,10 +55,12 @@ start_local() ->
     %%  even when there is no network connection
     erlang:is_alive() orelse net_kernel:start([list_to_atom(lists:concat([?MODULE, "_", os:getpid()])), shortnames]),
     %% configuration: local authority
-    ok = application:load(lambda),
+    _ = application:load(lambda),
     %% "self-signed": node runs both authority and a broker
     ok = application:set_env(lambda, authority, true),
-    %% lambda application. it does not have any dependencies, so should "just start".
+    %% lambda application. it does not have any dependencies other than compiler,
+    %%  so should "just start".
+    _ = application:start(compiler),
     %% Note: this is deliberate decision, don't just change to "ensure_all_started".
     ok = application:start(lambda).
 
@@ -68,6 +70,7 @@ start_local() ->
 end_local() ->
     ok = application:stop(lambda),
     ok = application:unload(lambda),
+    %% don't care about compiler
     lists:prefix(?MODULE_STRING, atom_to_list(node())) andalso net_kernel:stop(),
     ok.
 
@@ -93,7 +96,7 @@ start_node_link(Bootstrap, CmdLine, Authority) ->
             %"-kernel", "logger", "[{handler, default, logger_std_h,#{config => #{type => standard_error}, formatter => {logger_formatter, #{ }}}}]",
             %"-kernel", "logger_level", "all",
             "-pa", CP, "-pa", TestCP] ++ Auth ++ Boot ++ CmdLine}),
-    ok = peer:apply(Peer, application, start, [lambda]),
+    {ok, _Apps} = peer:apply(Peer, application, ensure_all_started, [lambda]),
     is_map(Bootstrap) andalso
         begin
             {_, BootNodes} = lists:unzip(maps:keys(Bootstrap)),

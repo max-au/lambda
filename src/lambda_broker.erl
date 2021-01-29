@@ -191,7 +191,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
 
 %% handles cancellations for both sell and buy orders (should it be split?)
 handle_cast({cancel, Trader}, State) ->
-    {reply, cancel(Trader, true, State)};
+    {noreply, cancel(Trader, true, State)};
 
 handle_cast({peers, Peers}, #lambda_broker_state{self = Self} = State) ->
     %% initial discovery
@@ -230,21 +230,35 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
 
 %% order complete (probably a partial completion, or a duplicate)
 handle_info({order, Id, Module, Sellers}, #lambda_broker_state{orders = Orders} = State) ->
-    ?dbg("order reply: id ~b with ~200p", [Id, Sellers]),
-    Outstanding = maps:get(Module, Orders),
-    %% find the order
-    {value, {Id, buy, Buyer, Quantity, BuyMeta, Previous}} = lists:keysearch(Id, 1, Outstanding),
-    %% notify buyers if any order complete
-    case notify_buyer(Buyer, Quantity, Sellers, Previous, []) of
-        {QuantityLeft, AlreadyUsed} ->
-            %% incomplete, keep current state (updating remaining quantity)
-            Out = lists:keyreplace(Id, 1, Outstanding, {Id, buy, Buyer, QuantityLeft, BuyMeta, AlreadyUsed}),
-            {noreply, State#lambda_broker_state{orders = Orders#{Module => Out}}};
-        done ->
-            %% complete, may trigger exchange subscription removal
-            Out = lists:keydelete(Id, 1, Outstanding),
-            {noreply, State#lambda_broker_state{orders = Orders#{Module => Out}}}
+    %% this is HORRIBLE codestyle, TODO: rewrite in Erlang, not in C :)
+    case maps:find(Module, Orders) of
+        {ok, Outstanding} ->
+            %% find the order
+            case lists:keysearch(Id, 1, Outstanding) of
+                {value, {Id, buy, Buyer, Quantity, BuyMeta, Previous}} ->
+                    ?dbg("order reply: id ~b for ~p with ~200p", [Id, Buyer, Sellers]),
+                    %% notify buyers if any order complete
+                    case notify_buyer(Buyer, Quantity, Sellers, Previous, []) of
+                        {QuantityLeft, AlreadyUsed} ->
+                            %% incomplete, keep current state (updating remaining quantity)
+                            Out = lists:keyreplace(Id, 1, Outstanding, {Id, buy, Buyer, QuantityLeft, BuyMeta, AlreadyUsed}),
+                            {noreply, State#lambda_broker_state{orders = Orders#{Module => Out}}};
+                        done ->
+                            %% complete, may trigger exchange subscription removal
+                            Out = lists:keydelete(Id, 1, Outstanding),
+                            {noreply, State#lambda_broker_state{orders = Orders#{Module => Out}}}
+                    end;
+                false ->
+                    %% buy order was canceled while in-flight to exchange
+                    ?dbg("order reply: id ~b has no buyer", [Id]),
+                    {noreply, State}
+            end;
+        error ->
+            %% buy order was canceled while in-flight to exchange
+            ?dbg("order reply: id ~b has no module known for buyer", [Id]),
+            {noreply, State}
     end;
+
 
 %% something went down: authority, seller, buyer
 handle_info({'DOWN', _Mref, process, Pid, _Reason}, #lambda_broker_state{authority = Auth} = State) ->
@@ -295,7 +309,7 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
             Demonitor andalso erlang:demonitor(MRef, [flush]),
             %% enumerate to find the order
             case maps:get(Module, Orders) of
-                [{Id, Type, Pid, _Q, _Prev}] ->
+                [{Id, Type, Pid, _Q, _Meta, _Prev}] ->
                     cancel_exchange_order(Type, Id, maps:get(Module, Exchanges)),
                     %% no orders left for this module, unsubscribe from exchanges
                     broadcast(State#lambda_broker_state.authority, {cancel, Module, self()}),
@@ -340,7 +354,9 @@ notify_buyer(Buyer, Quantity, [{Seller, QSell, Meta} | Remaining], Previous, Ser
 connect_sellers(_Buyer, []) ->
     ok;
 connect_sellers(Buyer, Contacts) ->
-    %% sellers contacts were discovered, ensure it can be resolved
+    %% sellers contacts were discovered, ensure discovery knows contacts
+    [lambda_discovery:set_node(Pid, Addr) || {{Pid, Addr}, _Quantity, _Meta} <- Contacts],
+    %% filter our contact information
     Servers = [{Pid, Quantity, Meta} || {{Pid, _Addr}, Quantity, Meta} <- Contacts],
     %% pass on order to the actual buyer
     Buyer ! {order, Servers}.
