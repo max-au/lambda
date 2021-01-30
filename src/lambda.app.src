@@ -11,7 +11,9 @@
         {env, [
             %% {authority, false},
             %% {broker, true},
-            %% {bootspec, ...} %% see lambda_bootstrap
+            %% {bootspec, ...}, %% see lambda_bootstrap
+            %% {publish, [mod1, mod2]}, %% modules to publish under lambda supervision
+            %% {discover, [mod1, mod2]} %% modules to discover, supervised by lambda
         ]},
 
         {licenses, ["BSD 3-clause clear"]},

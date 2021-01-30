@@ -154,8 +154,8 @@ prop_sequential(Control) ->
     authorities = [] :: [pid()],
     %% broker nodes
     brokers = [] :: [pid()],
-    %% server must be located on one of the broker nodes
-    servers = [] :: [pid()],
+    %% listener must be located on one of the broker nodes
+    listeners = [] :: [pid()],
     %% plb must also have a corresponding broker
     plb = [],
     %% requests
@@ -163,7 +163,7 @@ prop_sequential(Control) ->
 }).
 
 %% State cleanup
-cleanup(#lambda_state{authorities = Auth, brokers = Brokers, servers = Servers}) ->
+cleanup(#lambda_state{authorities = Auth, brokers = Brokers, listeners = Servers}) ->
     [gen_server:stop(Pid) || Pid <- Servers ++ Brokers ++ Auth].
 
 %% Limits
@@ -184,10 +184,10 @@ precondition(#lambda_state{authorities = Auth}, {call, gen_server, start, [lambd
 precondition(#lambda_state{brokers = Brokers}, {call, gen_server, start, [lambda_broker, _Peers, []]}) ->
     length(Brokers) < ?MAX_BROKERS;
 
-precondition(#lambda_state{brokers = Brokers, servers = Servers}, {call, gen_server, start, [lambda_server, [Broker, _Module, _Capacity], []]}) ->
+precondition(#lambda_state{brokers = Brokers, listeners = Servers}, {call, gen_server, start, [lambda_listener, [Broker, _Module, _Capacity], []]}) ->
     length(Servers) < ?MAX_SERVERS andalso lists:member(Broker, Brokers);
 
-precondition(#lambda_state{brokers = Brokers, servers = Servers}, {call, gen_server, start, [lambda_plb, [Broker, _Module, _Options], []]}) ->
+precondition(#lambda_state{brokers = Brokers, listeners = Servers}, {call, gen_server, start, [lambda_plb, [Broker, _Module, _Options], []]}) ->
     length(Servers) < ?MAX_PLB andalso lists:member(Broker, Brokers);
 
 precondition(#lambda_state{plb = Plb}, {call, ?MODULE, make_request, []}) ->
@@ -204,7 +204,7 @@ postcondition(_State, _Cmd, _Res) ->
     true.
 
 %% Events possible:
-%%  * start/stop an authority/broker/server/plb
+%%  * start/stop an authority/broker/listener/plb
 %%  * request created/completed/crashed
 %%  * net splits [NOT IMPLEMENTED]
 %% Command generation logic re-implements "precondition" logic
@@ -212,14 +212,14 @@ command(#lambda_state{authorities = Auth, brokers = Brokers, plb = _Plb, request
     %% nodes starting (authority/broker)
     AuthorityStart = {1, {call, gen_server, start, [lambda_authority, [], []]}},
     BrokerStart = {5, {call, gen_server, start, [lambda_broker, [], []]}},
-    %% server/plb starting (requires a broker)
+    %% listener/plb starting (requires a broker)
     ServerOrPlbStart =
         case Brokers of
             [] ->
                 [];
             Brokers ->
                 [
-                    {10, {call, gen_server, start, [lambda_server, [proper_types:oneof(Brokers), proper_types:oneof(?MODULES), #{capacity => proper_types:range(1, ?MAX_SERVER_CAPACITY)}], []]}},
+                    {10, {call, gen_server, start, [lambda_listener, [proper_types:oneof(Brokers), proper_types:oneof(?MODULES), #{capacity => proper_types:range(1, ?MAX_SERVER_CAPACITY)}], []]}},
                     {10, {call, gen_server, start, [lambda_plb, [proper_types:oneof(Brokers), proper_types:oneof(?MODULES), #{high => proper_types:range(1, ?MAX_PLB_CAPACITY)}], []]}}
                 ]
         end,
@@ -261,9 +261,9 @@ next_state(#lambda_state{brokers = Brokers} = State, Res, {call, gen_server, sta
     NewBroker = {call, erlang, element, [2, Res]},
     State#lambda_state{brokers = [NewBroker | Brokers]};
 
-next_state(#lambda_state{servers = Servers} = State, Res, {call, gen_server, start, [lambda_server, [_, _, _], []]}) ->
+next_state(#lambda_state{listeners = Servers} = State, Res, {call, gen_server, start, [lambda_listener, [_, _, _], []]}) ->
     NewServer = {call, erlang, element, [2, Res]},
-    State#lambda_state{servers = [NewServer | Servers]};
+    State#lambda_state{listeners = [NewServer | Servers]};
 
 next_state(#lambda_state{plb = Plb} = State, Res, {call, gen_server, start, [lambda_plb, [_, _, _], []]}) ->
     NewPlb = {call, erlang, element, [2, Res]},

@@ -58,7 +58,6 @@ init_per_testcase(_TestCase, Config) ->
 end_per_testcase(_TestCase, Config) ->
     proplists:get_value(lb, Config) =/= undefined andalso
         gen_server:stop(proplists:get_value(lb, Config)),
-    %% stop any servers left
     proplists:delete(lb, Config).
 
 %%--------------------------------------------------------------------
@@ -171,7 +170,7 @@ fail_capacity_wait(Config) when is_list(Config) ->
     Delay = 200,
     %% start both client & server locally (also verifies that it's possible - and there
     %%  are no registered names clashes)
-    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
+    {ok, Worker} = lambda_listener:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     %% spawn just enough requests to exhaust tokens
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
@@ -202,7 +201,7 @@ call_fail() ->
 
 call_fail(Config) when is_list(Config) ->
     Concurrency = 5,
-    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
+    {ok, Worker} = lambda_listener:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, exit, [kill], infinity) end)
         || _ <- lists:seq(1, Concurrency * 5)],
     wait_complete(Spawned),
@@ -214,7 +213,7 @@ packet_loss() ->
 
 packet_loss(Config) when is_list(Config) ->
     Concurrency = 5,
-    {ok, Worker} = lambda_server:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
+    {ok, Worker} = lambda_listener:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     %% sync broker + plb to ensure it received demand
     Lb = proplists:get_value(lb, Config),
     lambda_test:sync_via(Worker, proplists:get_value(broker, Config)), %% this flushes broker (order sent to plb)
@@ -249,7 +248,7 @@ throughput(Config) when is_list(Config) ->
 measure(Lb, Broker, CapPerNode, Nodes) ->
     %% remotely:
     {Node, Peer, Worker, CapPerNode} = make_node([], CapPerNode),
-    Workers = [begin {ok, W} = rpc:call(Node, lambda_server, start, [?MODULE, CapPerNode]), W end
+    Workers = [begin {ok, W} = rpc:call(Node, lambda_listener, start, [?MODULE, CapPerNode]), W end
         || _ <- lists:seq(1, Nodes - 1)],
     %% ensure expected capacity achieved
     [lambda_test:sync_via(W, Broker) || W <- [Worker | Workers]],

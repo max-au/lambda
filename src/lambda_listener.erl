@@ -18,7 +18,7 @@
 %%  directly (no connection created).
 %%
 %% @end
--module(lambda_server).
+-module(lambda_listener).
 -author("maximfca@gmail.com").
 
 %% API
@@ -53,7 +53,7 @@ start_link(Broker, Module, Options) ->
 %%-----------------------------------------------------------------
 %% gen_server implementation
 
--record(lambda_server_state, {
+-record(lambda_listener_state, {
     module :: module(),
     %% total remaining capacity
     capacity :: pos_integer(),
@@ -65,7 +65,7 @@ start_link(Broker, Module, Options) ->
 
 %% -define(DEBUG, true).
 -ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: server " ++ Fmt ++ "~n", [node(), self() | Arg])).
+-define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: listener " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
 -define (dbg(Fmt, Arg), ok).
 -endif.
@@ -75,9 +75,9 @@ init([Broker, Module, #{capacity := Capacity}]) ->
     _ = lambda_broker:sell(Broker, Module, Capacity, module_meta(Module)),
     %% trap exists, as server acts as a supervisor
     process_flag(trap_exit, true),
-    {ok, #lambda_server_state{module = Module, capacity = Capacity, broker = Broker}}.
+    {ok, #lambda_listener_state{module = Module, capacity = Capacity, broker = Broker}}.
 
-handle_call(get_count, _From, #lambda_server_state{conns = Conns} = State) ->
+handle_call(get_count, _From, #lambda_listener_state{conns = Conns} = State) ->
     Sum = lists:foldl(
         fun (Child, {AF, AT}) ->
             {F, T} = gen_server:call(Child, get_count),
@@ -87,19 +87,19 @@ handle_call(get_count, _From, #lambda_server_state{conns = Conns} = State) ->
 handle_cast(_Request, _State) ->
     erlang:error(notsup).
 
-handle_info({'EXIT', Pid, _Reason}, #lambda_server_state{module = Module, capacity = Capacity, conns = Conns, broker = Broker} = State) ->
+handle_info({'EXIT', Pid, _Reason}, #lambda_listener_state{module = Module, capacity = Capacity, conns = Conns, broker = Broker} = State) ->
     %% update outstanding "sell" order
     ?dbg("client ~p disconnected", [Pid]),
     {Cap, NewConns} = maps:take(Pid, Conns),
     NewCap = Capacity + Cap,
     lambda_broker:sell(Broker, Module, NewCap),
-    {noreply, State#lambda_server_state{capacity = NewCap, conns = NewConns}};
+    {noreply, State#lambda_listener_state{capacity = NewCap, conns = NewConns}};
 
-handle_info({connect, To, _Cap}, #lambda_server_state{capacity = 0} = State) ->
+handle_info({connect, To, _Cap}, #lambda_listener_state{capacity = 0} = State) ->
     ?dbg("client ~p wants ~b (nothing left)", [To, _Cap]),
     To ! {error, no_capacity},
     {noreply, State};
-handle_info({connect, To, Cap}, #lambda_server_state{module = Module, conns = Conns, capacity = Capacity, broker = Broker} = State) ->
+handle_info({connect, To, Cap}, #lambda_listener_state{module = Module, conns = Conns, capacity = Capacity, broker = Broker} = State) ->
     ?dbg("client ~p wants ~b (~b left)", [To, Cap, Capacity]),
     Allowed = min(Cap, Capacity),
     %% act as a supervisor here, starting child processes (connection handlers)
@@ -107,7 +107,7 @@ handle_info({connect, To, Cap}, #lambda_server_state{module = Module, conns = Co
     %% publish capacity update
     NewCap = Capacity - Cap,
     if NewCap =:= 0 -> lambda_broker:cancel(Broker, self()); true -> lambda_broker:sell(Broker, Module, NewCap) end,
-    {noreply, State#lambda_server_state{capacity = NewCap, conns = Conns#{Conn => Cap}}}.
+    {noreply, State#lambda_listener_state{capacity = NewCap, conns = Conns#{Conn => Cap}}}.
 
 %%--------------------------------------------------------------------
 %% @private Collects meta-information (reflection) of a module to publish

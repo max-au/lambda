@@ -7,8 +7,10 @@ Modern network applications implement 3-layer design:
 Lambda provides an implementation of a scalable stateless compute tier in Erlang.
 
 ## Basic Example
-This example requires at least a 4-core CPU, or running over a network. Put the code below (an Erlang 
-module `calc` exporting Pi calculation) into any temporary directory.
+This example runs Pi calculations in a remote node. At least 4-core CPU is required to
+run it locally.
+
+Code below implements `calc` exporting Pi calculation. Put it into a temporary directory.
 ```erlang
 -module(calc).
 -export([pi/1]).
@@ -72,19 +74,37 @@ Ensure `front` received more capacity:
 [See Math - scalable 3-tier application](doc/MATH.md).
 
 ## Use cases
-Primary lambda use-case is to enable remote code execution, and support remote tier lifecycle. It includes but
+Primary use-case is to enable remote code execution, and support remote tier lifecycle. It includes but
 not limited to:
- * moving a local call to remote tier
+ * moving code to remote tier
  * updating remote tier code via hot code load
- * safe API update and deployment, supporting hot code upgrade
+ * safe API update and deployment
 
 ## Design
-[See DESIGD.md](doc/DESIGN.md)
+[See DESIGN.md](doc/DESIGN.md)
 
 ## API
-Public API is provided via `lambda` module.
+Public API is provided via `lambda` module. Lambda framework can supervise publishing and
+discovery. Use release configuration (`sys.config`) to publish and/or discover modules:
+```erlang
+[
+    {lambda, [
+        {publish, calc},
+        {discover, basic}
+    ]}
+].
+```
 
-Programmatic APIs to use in releases.
+It is also supported to publish and discover modules under your application supervision,
+adding appropriate child specs to supervisor:
+```erlang
+    ChildSpes = [
+        #{
+            id => published_calc,
+            start => {lambda, start_publish, [calc]}
+        }
+    ]
+```
 
 
 ## Running tests
@@ -95,5 +115,5 @@ This suite uses PropEr library to simulate all possible state changes.
 ```
 ## Changelog
 
-Version 1.0.0:
+Version 0.1.0:
  - initial release

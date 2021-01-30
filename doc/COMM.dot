@@ -47,11 +47,11 @@ digraph G {
 
     plb [shape = box];
     plb -> broker [label = "buy"];
-    plb -> server [label = "connect"];
+    plb -> listener [label = "connect"];
     plb -> code [label = "token"];
 
-    server [shape = box];
-    server -> broker [label = "sell"];
+    listener [shape = box];
+    listener -> broker [label = "sell"];
 
     channel [shape = box];
     channel -> code [label = "reply"];

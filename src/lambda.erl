@@ -25,7 +25,7 @@ discover(Module, Options) ->
             %% module is available locally
             ignore;
         false ->
-            {ok, Plb} = lambda_plb_sup:start_plb(Module, Options),
+            {ok, Plb} = lambda_client_sup:start_plb(Module, Options),
             _ = lambda_plb:meta(Plb),
             {ok, Plb}
     end.
@@ -35,6 +35,6 @@ discover(Module, Options) ->
 publish(Module) ->
     publish(Module, #{capacity => erlang:system_info(schedulers)}).
 
--spec publish(module(), lambda_server:options()) -> gen:start_ret().
+-spec publish(module(), lambda_listener:options()) -> gen:start_ret().
 publish(Module, Options) ->
-    lambda_server_sup:start_server(Module, Options).
+    lambda_listener_sup:start_listener(Module, Options).

@@ -67,22 +67,22 @@ init([]) ->
             modules => [lambda_bootstrap]
         } || Dyn <- DynBoot],
 
-    %% Supervisors for statically published server/plb modules
+    %% Supervisors for statically published listener/plb modules
     %% take children list from configuration (hosted deployment)
     Publish = [check_server_mod(Mod) || Mod <- application:get_env(App, publish, [])],
     Discover = [check_plb_mod(Mod) || Mod <- application:get_env(App, discover, [])],
     ModSup = [
         #{
-            id => lambda_server_sup,
-            start => {lambda_server_sup, start_link, [Publish]},
+            id => lambda_listener_sup,
+            start => {lambda_listener_sup, start_link, [Publish]},
             type => supervisor,
-            modules => [lambda_server_sup]
+            modules => [lambda_listener_sup]
         },
         #{
-            id => lambda_plb_sup,
-            start => {lambda_plb_sup, start_link, [Discover]},
+            id => lambda_client_sup,
+            start => {lambda_client_sup, start_link, [Discover]},
             type => supervisor,
-            modules => [lambda_plb_sup]
+            modules => [lambda_client_sup]
         }
     ],
     {ok, {SupFlags, lists:concat([DiscoSpec, AuthoritySpec, BrokerSpec, BootSpec, ModSup])}}.
