@@ -65,7 +65,7 @@ start_link() ->
     end.
 
 %% @doc Sets the mapping between node name and address to access the node.
--spec set_node(location(), address()) -> ok.
+-spec set_node(node() | location(), address()) -> ok.
 set_node(Pid, Address) when is_pid(Pid) ->
     set_node(node(Pid), Address);
 set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
@@ -82,7 +82,7 @@ del_node(Node) ->
     gen_server:call(?MODULE, {del, Node}).
 
 %% @doc Returns mapping of the node name to an address.
--spec get_node(node()) -> lambda:address() | error.
+-spec get_node(node()) -> lambda_discovery:address() | error.
 get_node(Node) ->
     gen_server:call(?MODULE, {get, Node}).
 
@@ -107,13 +107,8 @@ get_node() ->
     Port :: inet:port_number(),
     Version :: non_neg_integer().
 
-port_please(Name, Host, _Timeout) ->
-    case get_node(make_node(Name, Host)) of
-        {_Family, _Addr, Port} ->
-            {port, Port, ?EPMD_VERSION}; %% hardcode EPMD version to 6
-        error ->
-            noport
-    end.
+port_please(_Name, _Host, _Timeout) ->
+    error(notup).
 
 -spec names(Host) -> {ok, [{Name, Port}]} | {error, Reason} when
     Host :: atom() | string() | inet:ip_address(),
@@ -185,7 +180,7 @@ address_please(Name, Host, AddressFamily) ->
 %% Discovery state: maps node names to addresses.
 %% Current limitation: a node can only have a single address,
 %%  either IPv4 or IPv6.
--type state() :: #{node() => lambda:address()}.
+-type state() :: #{node() => lambda_discovery:address()}.
 
 -spec init([]) -> {ok, state()}.
 init([]) ->

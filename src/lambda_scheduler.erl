@@ -58,7 +58,7 @@
 %% API
 
 %% Scheduler process
--type dest() :: gen_statem:server_ref().
+-type dest() :: lambda:dst().
 
 %% Target: what to schedule.
 %% 'undefined' atom has a special meaning (root)
@@ -189,7 +189,7 @@ set_resolver(Dest, Resolver) ->
 
 %% @doc Starts build system with specified resolver, and registers
 %%      builder process.
--spec start_link(gen:emgr_name(), resolver()) -> {ok, dest()}.
+-spec start_link(lambda:dst(), resolver()) -> {ok, dest()}.
 start_link(Name, Resolver) when is_function(Resolver, 2) ->
     gen_server:start_link(Name, ?MODULE, [Resolver], []).
 

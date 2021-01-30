@@ -32,13 +32,13 @@
 %% API
 
 -type bootspec() ::
-    {static, {lambda_discovery:location(), lambda_discovery:address()}} |
-    {custom, module(), atom(), [term()]}. %% callback function
+    {static, #{lambda_discovery:location() => lambda_discovery:address()}} |
+    {epmd, [node()]}.
 
 %% @doc
 %% Starts the server and links it to calling process.
 %% Needs at least one subscriber (otherwise boostrap has no use)
--spec start_link([pid() | atom()], bootspec()) -> gen:start_ret().
+-spec start_link([pid() | atom()], bootspec()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link([_ | _] = Subs, Bootspec) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, {Subs, Bootspec}, []).
 
@@ -49,7 +49,7 @@ start_link([_ | _] = Subs, Bootspec) ->
     %% subscribers
     subscribers :: [pid() | atom()],
     %% boot spec remembered
-    spec :: [bootspec()],
+    spec :: bootspec(),
     %% last resolved bootstrap (if any)
     bootstrap = #{} :: #{lambda_discovery:location() => lambda_discovery:address()},
     %% timer for regular updates
@@ -107,7 +107,7 @@ reschedule(State) ->
 
 resolve({static, Static}) when is_map(Static) ->
     Static; %% preprocessed map of location => address()
-resolve({static, Static}) when is_list(Static) ->
+resolve({epmd, Epmd}) ->
     %% list of Erlang node names, assuming epmd, and resolve
     %%  using erl_epmd. Must know distribution family, take it
     %%  from undocumented net_kernel structure (although could use
@@ -120,7 +120,7 @@ resolve({static, Static}) when is_list(Static) ->
     catch _:_ ->
         case inet_db:res_option(inet6) of true -> inet6; false -> inet end
     end,
-    resolve_epmd(Static, Family, #{}).
+    resolve_epmd(Epmd, Family, #{}).
 
 resolve_epmd([], _Family, Acc) ->
     Acc;
@@ -145,5 +145,7 @@ resolve_epmd([Node | Tail], Family, Acc) ->
 resolve_port(Name, Ip) ->
     {port, Port, _Version} =
         try erl_epmd:port_please(Name, Ip)
-        catch error:undef -> erl_epmd_ORIGINAL:port_please(Name, Ip) end,
+        catch error:undef ->
+            AntiDialyzer = list_to_atom("erl_epmd_ORIGINAL"),
+            AntiDialyzer:port_please(Name, Ip) end,
     Port.

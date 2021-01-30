@@ -45,8 +45,10 @@
     capacity := pos_integer()
 }.
 
+-export_type([options/0]).
+
 %% @doc Starts the server and links it to the caller.
--spec start_link(gen:emgr_name(), module(), options()) -> gen:start_ret().
+-spec start_link(lambda:dst(), module(), options()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link(Broker, Module, Options) ->
     gen_server:start_link(?MODULE, [Broker, Module, Options], []).
 
@@ -56,11 +58,11 @@ start_link(Broker, Module, Options) ->
 -record(lambda_listener_state, {
     module :: module(),
     %% total remaining capacity
-    capacity :: pos_integer(),
+    capacity :: non_neg_integer(),
     %% children (linked)
     conns = #{} :: #{pid() => pos_integer()},
     %% broker
-    broker :: gen:emgr_name()
+    broker :: lambda:dst()
 }).
 
 %% -define(DEBUG, true).
@@ -72,7 +74,7 @@ start_link(Broker, Module, Options) ->
 
 init([Broker, Module, #{capacity := Capacity}]) ->
     %% monitor broker and sell some capacity
-    _ = lambda_broker:sell(Broker, Module, Capacity, module_meta(Module)),
+    _ = lambda_broker:sell(Broker, Module, Capacity, #{module => module_meta(Module)}),
     %% trap exists, as server acts as a supervisor
     process_flag(trap_exit, true),
     {ok, #lambda_listener_state{module = Module, capacity = Capacity, broker = Broker}}.

@@ -57,7 +57,7 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the exchange and links it to calling process.
--spec start_link(module()) -> gen:start_ret().
+-spec start_link(module()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link(Module) ->
     gen_server:start_link(?MODULE, [Module], []).
 
@@ -81,7 +81,7 @@ cancel(Exchange, Type, Id) ->
     Quantity :: non_neg_integer(),
     MRef :: reference(),
     Id :: non_neg_integer(),
-    Contact :: {lambda_broker:location(), lambda_discovery:address()},
+    Contact :: {lambda_discovery:location(), lambda_discovery:address()},
     Meta :: lambda_broker:sell_meta()
 }.
 

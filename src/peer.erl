@@ -87,7 +87,7 @@
 ]).
 
 %% Convenience type to address specific instance
--type dest() :: gen_server:server_ref().
+-type dest() :: lambda:dst().
 
 %% Origin node will listen to the specified port (port 0 is auto-select),
 %%  or specified IP/Port, and expect peer node to connect to this port.
@@ -603,16 +603,7 @@ command_line(Listen, Options) ->
                 ["-detached", "-user", atom_to_list(?MODULE), "-origin", IpStr, integer_to_list(Port)]
         end,
     %% code path
-    CodePath =
-        case code:which(?MODULE) of
-            cover_compiled ->
-                {file, File} = cover:is_compiled(?MODULE),
-                ["-pa", filename:absname(filename:dirname(File))];
-            Path when is_list(Path) ->
-                ["-pa", filename:absname(filename:dirname(Path))];
-            _Other ->
-                []
-        end,
+    CodePath = module_path_args(code:which(?MODULE)),
     %% command line: build
     %% BINDIR environment variable is already set
     %% EMU variable it also set
@@ -621,6 +612,14 @@ command_line(Listen, Options) ->
     BinDir = filename:join(Erts, "bin"),
     ErlExec = filename:join(BinDir, "erlexec"),
     {ErlExec, NameArg ++ StartCmd ++ CodePath ++ CmdOpts}.
+
+module_path_args(cover_compiled) ->
+    {file, File} = cover:is_compiled(?MODULE),
+    ["-pa", filename:absname(filename:dirname(File))];
+module_path_args(Path) when is_list(Path) ->
+    ["-pa", filename:absname(filename:dirname(Path))];
+module_path_args(_) ->
+    [].
 
 longnames() ->
     case net_kernel:longnames() of

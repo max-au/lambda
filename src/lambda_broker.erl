@@ -50,7 +50,7 @@
 }.
 
 -type buy_meta() :: #{
-    vsn => term()
+    version => any
 }.
 
 -export_type([sell_meta/0, buy_meta/0]).
@@ -59,12 +59,12 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link() -> gen:start_ret().
+-spec start_link() -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc returns list of authorities known to this broker
--spec authorities(gen:emgr_name()) -> [pid()].
+-spec authorities(lambda:dst()) -> [pid()].
 authorities(Broker) ->
     gen_server:call(Broker, authorities).
 
@@ -79,31 +79,31 @@ authorities(Broker, Authorities) ->
 %%      order, which is sent (updated) to all exchanges serving the
 %%      Module. If there are no exchanges known, authorities are
 %%      queried.
--spec sell(gen:emgr_name(), module(), pos_integer()) -> ok.
+-spec sell(lambda:dst(), module(), pos_integer()) -> ok.
 sell(Srv, Module, Quantity) ->
     sell(Srv, Module, Quantity, #{}).
 
 %% @doc Sells some capacity of (potentially newly published) Module,
 %%      with meta-information provided.
--spec sell(gen:emgr_name(), module(), pos_integer(), sell_meta()) -> ok.
+-spec sell(lambda:dst(), module(), pos_integer(), sell_meta()) -> ok.
 sell(Srv, Module, Quantity, Meta) ->
     gen_server:cast(Srv, {sell, Module, self(), Quantity, Meta}).
 
 %% @doc Creates an outstanding "buy" order, which is fanned out to
 %%      all known exchanges serving the module.
 %%      Asynchronous, buyer is expected to monitor the broker.
--spec buy(gen:emgr_name(), module(), pos_integer()) -> ok.
+-spec buy(lambda:dst(), module(), pos_integer()) -> ok.
 buy(Srv, Name, Quantity) ->
     %% Pass self() explicitly to allow tricks with proxy-ing gen_server calls
     buy(Srv, Name, Quantity, #{}).
 
--spec buy(gen:emgr_name(), module(), pos_integer(), buy_meta()) -> ok.
+-spec buy(lambda:dst(), module(), pos_integer(), buy_meta()) -> ok.
 buy(Srv, Name, Quantity, Meta) ->
     %% Pass self() explicitly to allow tricks with proxy-ing gen_server calls
     gen_server:cast(Srv, {buy, Name, self(), Quantity, Meta}).
 
 %% @doc Cancels an outstanding order. Asynchronous.
--spec cancel(gen:emgr_name(), pid()) -> ok.
+-spec cancel(lambda:dst(), pid()) -> ok.
 cancel(Srv, Proc) ->
     gen_server:cast(Srv, {cancel, Proc}).
 

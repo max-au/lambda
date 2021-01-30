@@ -57,7 +57,7 @@
 %% @doc
 %% Starts the server and links it to calling process. Registers a local
 %%  process name.
--spec start_link() -> gen:start_ret().
+-spec start_link() -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 

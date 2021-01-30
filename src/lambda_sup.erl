@@ -59,7 +59,7 @@ init([]) ->
                           {ok, Host} = inet:gethostname(),
                           list_to_atom(lists:concat(["authority", "@", Host, domain(net_kernel:longnames())]))
                   end,
-    DynBoot = application:get_env(App, bootspec, [{static, [DefaultBoot]}]),
+    DynBoot = application:get_env(App, bootspec, [{epmd, [DefaultBoot]}]),
     BootSpec = [
         #{
             id => lambda_bootstrap,
@@ -85,7 +85,7 @@ init([]) ->
             modules => [lambda_client_sup]
         }
     ],
-    {ok, {SupFlags, lists:concat([DiscoSpec, AuthoritySpec, BrokerSpec, BootSpec, ModSup])}}.
+    {ok, {SupFlags, DiscoSpec ++ AuthoritySpec ++ BrokerSpec ++ BootSpec ++ ModSup}}.
 
 
 %%--------------------------------------------------------------------

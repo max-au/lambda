@@ -13,11 +13,11 @@
 
 -export([init/1]).
 
--spec start_plb(module(), lambda_plb:options()) -> ok.
+-spec start_plb(module(), lambda_plb:options()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_plb(Mod, Options) ->
     supervisor:start_child(?MODULE, mod_spec(Mod, Options)).
 
--spec start_link(Mods :: [{module(), pos_integer()}]) -> supervisor:startlink_ret().
+-spec start_link(Mods :: [{module(), pos_integer()}]) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link(Modules) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, Modules).
 

@@ -42,18 +42,12 @@
     %% capacity to request from all servers combined
     capacity := non_neg_integer(),
     %% local broker process (lambda_broker by default)
-    broker => gen:emgr_name(),
+    broker => lambda:dst(),
     %% disable automatic meta query/compilation
     compile => false
 }.
 
--type meta() :: #{
-    md5 := binary(),
-    exports := [{atom(), pos_integer()}],
-    attributes => [term()]
-}.
-
--export_type([meta/0, options/0]).
+-export_type([options/0]).
 
 
 -include_lib("kernel/include/logger.hrl").
@@ -61,7 +55,7 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server and links it to calling process.
--spec start_link(gen:emgr_name(), module(), options()) -> gen:start_ret().
+-spec start_link(lambda:dst(), module(), options()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link(Broker, Module, Options) when is_atom(Module) ->
     gen_server:start_link({local, Module}, ?MODULE, {Broker, Module, Options}, []).
 
@@ -110,7 +104,7 @@ capacity(Module) ->
 
 %% @doc Waits until PLB discovers the module, compiles proxy module and
 %%      returns meta information.
--spec meta(gen:emgr_name()) -> module().
+-spec meta(atom() | pid()) -> module().
 meta(Srv) ->
     gen_server:call(Srv, meta, infinity).
 
@@ -156,7 +150,7 @@ meta(Srv) ->
     %% queue: process that accepts 'wait' requests
     queue :: pid(),
     %% local broker, monitored for failover purposes
-    broker :: gen:emgr_name()
+    broker :: lambda:dst()
 }).
 
 -type state() :: #lambda_plb_state{}.
@@ -168,7 +162,7 @@ meta(Srv) ->
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
--spec init({Module :: atom(), Options :: options()}) -> {ok, state()}.
+-spec init({lambda:dst(), Module :: atom(), Options :: options()}) -> {ok, state()}.
 init({Broker, Module, #{capacity := HW} = Options}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
@@ -194,6 +188,7 @@ handle_call(token, _From, #lambda_plb_state{capacity = Cap, index_to_pid = Itp} 
     {reply, To, State#lambda_plb_state{capacity = Cap - 1}};
 
 handle_call(meta, From, #lambda_plb_state{meta = Waiting} = State) when is_list(Waiting) ->
+    %% Do not add any code that can block here
     {noreply, State#lambda_plb_state{meta = [From | Waiting]}};
 handle_call(meta, _From, #lambda_plb_state{meta = Meta} = State) ->
     {reply, Meta, State};
@@ -252,7 +247,7 @@ handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Mo
     ?dbg("meta ~200p received for ~200p", [Meta, Waiting]),
     Module = compile_proxy(Module, Meta),
     [gen:reply(To, Meta) || To <- Waiting],
-    handle_info({order, Servers}, State#lambda_plb_state{meta = Meta});
+    handle_info({order, Servers}, State#lambda_plb_state{meta = maps:get(module, Meta)});
 handle_info({order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
     ?dbg("found servers: ~200p", [Servers]),
@@ -348,7 +343,7 @@ take_bound(Bound, Idx, Mask) ->
 
 %% @private creates proxy, dynamically, when meta has been received for the first time.
 compile_proxy(Module, Meta) ->
-    #{exports := Exports, attributes := Attrs} = Meta,
+    #{module := #{exports := Exports, attributes := Attrs}} = Meta,
     %% create a module (technically possible to make an AST, but for compatibility
     %%  reasons it's better to use text lines for compilation)
     ExpLine = "-export([" ++ lists:flatten(lists:join(", ", [io_lib:format("~s/~b", [F, A]) || {F, A} <- Exports])) ++ "]).",

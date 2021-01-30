@@ -17,12 +17,12 @@
 
 -export([init/1]).
 
--spec start_listener(module(), lambda_listener:options()) -> ok.
+-spec start_listener(module(), lambda_listener:options()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_listener(Mod, Options) ->
     {module, Mod} = code:ensure_loaded(Mod),
     supervisor:start_child(?MODULE, mod_spec(Mod, Options)).
 
--spec start_link(Mods :: [{module(), pos_integer()}]) -> supervisor:startlink_ret().
+-spec start_link(Mods :: [{module(), pos_integer()}]) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link(Modules) ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, Modules).
 
