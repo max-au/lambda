@@ -43,6 +43,22 @@ calc() ->
         "trunc(NextResult * Pow) / Pow; false -> pi(NextResult, -1 * Numerator, Denominator + 2, Precision) end."],
     compile_code(File).
 
+dist_args(Host) ->
+    %% if test host does not have IPv4 address, all peers must start with IPv6
+    IPv6 = inet_db:res_option(inet6),
+    case inet_res:gethostbyname(Host) of
+        {ok, _HostEnt} ->
+            [];
+        {error, nxdomain} when IPv6 =:= false ->
+            %% check whether node has IPv6 address and if yes, use IPv6
+            case inet_res:gethostbyname(Host, inet6) of
+                {ok, _HE} ->
+                    ["-proto_dist", "inet6_tcp"];
+                {error, nxdomain} ->
+                    []
+            end
+    end.
+
 %%--------------------------------------------------------------------
 %% Test Cases
 
@@ -51,25 +67,26 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     {ok, Host} = inet:gethostname(),
+    DistArgs = dist_args(Host),
     %% Prefer longnames (for 'peer' does it too)
     SrvNode = list_to_atom(lists:concat([authority, "@", Host,
         case inet_db:res_option(domain) of [] -> ""; Domain -> [$. | Domain] end])),
     {ok, Server} = peer:start_link(#{connection => standard_io, node => SrvNode,
-        args => ["-lambda", "authority", "true"]}),
+        args => ["-lambda", "authority", "true" | DistArgs]}),
     %% local calc module into Server (module does not exist on disk)
     {module, calc} = peer:apply(Server, code, load_binary, [calc, nofile, calc()]),
     {ok, _Apps} = peer:apply(Server, application, ensure_all_started, [lambda]),
     %% Server: publish calc
     {ok, _Srv} = peer:apply(Server, lambda, publish, [calc, #{capacity => 2}]),
     %% Client: discover calc (using epmd)
-    {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
+    {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name(), args => DistArgs}),
     {ok, _Apps} = peer:apply(Client, application, ensure_all_started, [lambda]),
     {ok, Plb} = peer:apply(Client, lambda, discover, [calc, #{capacity => 10}]),
     %% Execute calc remotely (on the client)
     ?assertEqual(3.14, peer:apply(Client, calc, pi, [2])),
     %% continue with capacity expansion
     %% run another server with more capacity
-    {ok, Srv2} = peer:start_link(#{connection => standard_io, node => peer:random_name()}),
+    {ok, Srv2} = peer:start_link(#{connection => standard_io, node => peer:random_name(), args => DistArgs}),
     {ok, _Apps} = peer:apply(Srv2, application, ensure_all_started, [lambda]),
     {module, calc} = peer:apply(Srv2, code, load_binary, [calc, nofile, calc()]),
     {ok, _Srv2Srv} = peer:apply(Srv2, lambda, publish, [calc, #{capacity => 2}]),

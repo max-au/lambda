@@ -51,7 +51,7 @@ start_link([_ | _] = Subs, Bootspec) ->
     %% boot spec remembered
     spec :: [bootspec()],
     %% last resolved bootstrap (if any)
-    bootstrap = [] :: [{lambda_discovery:location(), lambda_discovery:address()}],
+    bootstrap = #{} :: #{lambda_discovery:location() => lambda_discovery:address()},
     %% timer for regular updates
     timer :: undefined | reference()
 }).
@@ -90,7 +90,7 @@ handle_resolve(#lambda_bootstrap_state{bootstrap = Prev, spec = Spec, subscriber
         Prev ->
             reschedule(State);
         New ->
-            ?dbg("resolved ~p for ~p into ~200p", [Spec, Subs, Prev]),
+            ?dbg("resolved ~200p into ~200p (was ~200p)", [Spec, New, Prev]),
             %% notify subscribers of changes, TODO: make diff Prev/New
             [gen_server:cast(Sub, {peers, New}) || Sub <- Subs],
             reschedule(State#lambda_bootstrap_state{bootstrap = New})
@@ -109,26 +109,41 @@ resolve({static, Static}) when is_map(Static) ->
     Static; %% preprocessed map of location => address()
 resolve({static, Static}) when is_list(Static) ->
     %% list of Erlang node names, assuming epmd, and resolve
-    %%  using erl_epmd
-    resolve_epmd(Static, #{}).
+    %%  using erl_epmd. Must know distribution family, take it
+    %%  from undocumented net_kernel structure (although could use
+    %%  command line, -proto_dist)
+    Family = try
+        {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
+            [{listen, _Pid, _Proc, {net_address, {_Ip, _Port}, _HostName, _Proto, Fam}, _Mod}],
+            _, _, _, _, _} = sys:get_state(net_kernel),
+            Fam
+    catch _:_ ->
+        case inet_db:res_option(inet6) of true -> inet6; false -> inet end
+    end,
+    resolve_epmd(Static, Family, #{}).
 
-resolve_epmd([], Acc) ->
+resolve_epmd([], _Family, Acc) ->
     Acc;
-resolve_epmd([Node | Tail], Acc) when Node =:= node() ->
-    resolve_epmd(Tail, Acc#{{lambda_authority, Node} => lambda_discovery:get_node()});
-resolve_epmd([Node | Tail], Acc) ->
+resolve_epmd([Node | Tail], Family, Acc) when Node =:= node() ->
+    resolve_epmd(Tail, Family, Acc#{{lambda_authority, Node} => lambda_discovery:get_node()});
+resolve_epmd([Node | Tail], Family, Acc) ->
     try
         [Name, Host] = string:split(atom_to_list(Node), "@", all),
-        {ok, #hostent{ h_addr_list = [Ip | _]}} = inet_res:gethostbyname(Host),
-        {port, Port, _Version} =
-            try erl_epmd:port_please(Name, Ip)
-            catch error:undef -> erl_epmd_ORIGINAL:port_please(Name, Ip) end,
-        resolve_epmd(Tail, Acc#{{lambda_authority, Node} => {Ip, Port}})
+        {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(Host, Family),
+        Port = resolve_port(Name, Ip),
+        resolve_epmd(Tail, Family, Acc#{{lambda_authority, Node} => {Ip, Port}})
     catch
         badmatch:noport ->
             %% node is not running, which isn't an error
-            resolve_epmd(Tail, Acc);
+            resolve_epmd(Tail, Family, Acc);
         Class:Reason:Stack ->
             ?LOG_DEBUG("failed to resolve ~s, ~s:~p~n~200p", [Node, Class, Reason, Stack]),
-            resolve_epmd(Tail, Acc)
+            resolve_epmd(Tail, Family, Acc)
     end.
+
+%% the "original" module is created dynamically in runtime
+resolve_port(Name, Ip) ->
+    {port, Port, _Version} =
+        try erl_epmd:port_please(Name, Ip)
+        catch error:undef -> erl_epmd_ORIGINAL:port_please(Name, Ip) end,
+    Port.

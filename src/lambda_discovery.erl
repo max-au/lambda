@@ -281,24 +281,25 @@ rename(From, To) ->
     false = code:purge(From).
 
 local_addr(Host, Family) ->
+    AddrLen = case Family of inet -> 4; inet6 -> 8 end,
     case application:get_env(kernel, inet_dist_use_interface) of
-        {ok, Addr1} when Family =:= inet, tuple_size(Addr1) =:= 4 ->
-            Addr1;
-        {ok, Addr1} when Family =:= inet6, tuple_size(Addr1) =:= 8 ->
+        {ok, Addr1} when tuple_size(Addr1) =:= AddrLen ->
             Addr1;
         undefined ->
-            %% attempt to guess external IP address:
-            %% {ok, Ifs} = inet:getifaddrs(),
-            %% LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
-            %% Local = [Valid || Valid <- LocalUp, is_list(inet:ntoa(Valid))],
-            %% native resolver cannot be used, so use one written in pure Erlang
+            %% native resolver cannot be used because discovery process
+            %%  is started under kernel_sup when inet_native is not yet
+            %%  available.
+            %% use one written in pure Erlang
             case inet_res:gethostbyname(Host, Family) of
                 {ok, #hostent{h_addr_list = Addrs}} ->
                     hd(Addrs);
                 {error, nxdomain} ->
-                    %% TODO: better fallback. Testing of this branch requires non-connected laptop,
-                    %%  and I'm developing this while on a plane
-                    {127, 0, 0, 1} %% fallback to localhost as default
+                    %% attempt to guess external IP address enumerating interfaces that are up
+                    {ok, Ifs} = inet:getifaddrs(),
+                    LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
+                    Local = [Valid || Valid <- LocalUp, tuple_size(Valid) =:= AddrLen],
+                    %% TODO: localhost should have lower priority
+                    hd(Local)
             end
     end.
 
