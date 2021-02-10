@@ -20,15 +20,18 @@
     wait_connection/1
 ]).
 
+-type sync_target() :: sys:name() | {lambda:dst(), sys:name()}.
+
 %% @doc Flushes well-behaved (implementing OTP system behaviour)
-%%      process queue.
--spec sync(sys:name() | [sys:name()]) -> ok.
-sync([Pid]) ->
-    sys:get_state(Pid),
+%%      process queue. When a list of processes is supplied, acts
+%%      sequentially.
+-spec sync(sync_target() | [sync_target()]) -> ok.
+sync(List) when is_list(List) ->
+    [sync(El) || El <- List],
     ok;
-sync([Pid | More]) ->
-    sys:get_state(Pid),
-    sync(More);
+sync({Peer, Pid}) when is_pid(Pid) ->
+    peer:apply(Peer, sys, get_state, [Pid]),
+    ok;
 sync(Pid) when is_pid(Pid) ->
     sys:get_state(Pid),
     ok.
@@ -43,9 +46,13 @@ sync(Pid) when is_pid(Pid) ->
 -spec sync_via(sys:name(), sys:name()) -> ok.
 sync_via(Pid, Pid) ->
     error(cycle);
-sync_via(Via, Pid) ->
+sync_via(Via, Pid) when is_pid(Via) ->
     sys:replace_state(Via, fun (S) -> (catch sys:get_state(Pid)), S end),
-    ok.
+    ok;
+sync_via({_Peer, Name}, Name) ->
+    error(cycle);
+sync_via({Peer, Via}, Name) ->
+    peer:apply(Peer, sys, replace_state, [Via, fun (S) -> (catch sys:get_state(Name)), S end]).
 
 %% @doc Start lambda application locally (in this VM). Authority is local,
 %%      epmd replaced. Node is made distributed

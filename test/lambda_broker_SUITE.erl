@@ -70,7 +70,7 @@ basic(Config) when is_list(Config) ->
     %% start root (empty) authority
     {AuthPid, Bootstrap} = start_authority(#{}),
     %% start a number of (unnamed) brokers pointing at authority
-    Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 2)],
+    Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 8)],
     %% ensure all brokers have processed everything. Twice.
     lambda_test:sync([AuthPid | Brokers]),
     %% ensure authority has discovered all of them

@@ -147,7 +147,7 @@ handle_info({discover, Broker, Addr}, #lambda_authority_state{authorities = Auth
     ?dbg("BROKER DISCOVERING by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
     _MRef = monitor(process, Broker),
     %% send self, and a list of other authorities to discover
-    erlang:send(Broker, {authority, self(), maps:get(self(), Auth)}, [noconnect]),
+    erlang:send(Broker, {authority, self(), maps:get(self(), Auth), Auth}, [noconnect]),
     {noreply, State#lambda_authority_state{brokers = Brokers#{Broker => peer_addr(Addr)}}};
 
 %% Broker requesting exchanges for a Module

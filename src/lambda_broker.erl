@@ -151,6 +151,7 @@ init([]) ->
 
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
+    ?dbg("reporting authorities ~200p", [maps:keys(Auth)]),
     {reply, maps:keys(Auth), State}.
 
 handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = Self, next_id = Id, exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
@@ -199,17 +200,19 @@ handle_cast({peers, Peers}, #lambda_broker_state{self = Self, authority = Auth} 
     discover(Auth, Peers, Self),
     {noreply, State}.
 
-handle_info({authority, NewAuth, _AuthAddr}, #lambda_broker_state{authority = Auth} = State)
+handle_info({authority, NewAuth, _AuthAddr, _Peers}, #lambda_broker_state{authority = Auth} = State)
     when is_map_key(NewAuth, Auth) ->
     ?dbg("duplicate authority ~s (from ~200p)", [node(NewAuth), _AuthAddr]),
     {noreply, State};
 
 %% authority discovered
-handle_info({authority, NewAuth, AuthAddr}, #lambda_broker_state{authority = Auth} = State) ->
+handle_info({authority, NewAuth, AuthAddr, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
     ?dbg("got authority ~s:~p (~200p)", [node(NewAuth), NewAuth, AuthAddr]),
     _MRef = erlang:monitor(process, NewAuth),
     %% new authority may know more exchanges for outstanding orders
     [subscribe_exchange(#{NewAuth => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
+    %% extra discovery for authorities known remotely but not locally
+    discover(Auth, Peers, Self),
     {noreply, State#lambda_broker_state{authority = Auth#{NewAuth => AuthAddr}}};
 
 %% exchange list updates for Module

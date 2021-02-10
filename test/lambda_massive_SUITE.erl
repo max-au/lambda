@@ -55,13 +55,23 @@ start_tier(Boot, Count, AuthorityCount, ServiceLocator) ->
             Extras = if Auth -> ["-lambda", "authority", "true"]; true -> [] end,
             ExtraArgs = ["-lambda", "bootspec", "[{file,\"" ++ ServiceLocator ++ "\"}]" | Extras],
             %% Node = peer:random_name(),
-            Node = list_to_atom(lists:flatten(io_lib:format("~s-~b", [if Auth -> "authority"; true -> "lambda" end, Seq]))),
-            {ok, Peer} = peer:start_link(#{node => Node,
+            {ok, Host} = inet:gethostname(),
+            Node = list_to_atom(lists:flatten(
+                io_lib:format("~s-~b@~s", [if Auth -> "authority"; true -> "lambda" end, Seq, Host]))),
+            {ok, Peer} = peer:start_link(#{node => Node, longnames => false,
                 args => ["-boot", Boot | ExtraArgs], connection => standard_io}),
+            %% add code path to the test directory for helper functions in lambda_test
+            true = peer:apply(Peer, code, add_path, [filename:dirname(code:which(?MODULE))]),
             unlink(Peer),
             {Peer, Node, Auth}
         end
         || Seq <- lists:seq(1, Count)]).
+
+%psync(Peers, Name) ->
+%    lambda_async:pmap([{peer, apply, [P, sys, get_state, [Name]]} || P <- Peers]).
+%psync(Peers, Via, Name) ->
+%    lambda_async:pmap([{peer, apply, [P, sys, replace_state,
+%        [Via, fun (S) -> (catch sys:get_state(Name)), S end]]} || P <- Peers]).
 
 %%--------------------------------------------------------------------
 %% Test Cases
@@ -74,20 +84,25 @@ basic(Config) when is_list(Config) ->
     ServiceLocator = filename:join(Priv, "service.loc"),
     %% start a tier, with several authorities
     AuthCount = 2,
-    {Peers, _Nodes, AuthBit} = lists:unzip3(start_tier(create_release(Priv), 4, AuthCount, ServiceLocator)),
-    %% force bootstrap
-    [peer:apply(P, lambda_bootstrap, discover, []) || P <- Peers],
-    %% whitebox: flush bootstrap, authority, broker of all peers
-    [peer:apply(P, sys, get_state, [Proc]) || Proc <- [lambda_bootstrap, lambda_broker], P <- Peers],
+    AllPeers = start_tier(create_release(Priv), 4, AuthCount, ServiceLocator),
+    AuthPeers = [A || {A, _, true} <- AllPeers],
+    {Peers, Nodes, _AuthBit} = lists:unzip3(AllPeers),
+    %% Find all broker pids on all nodes
+    Brokers = lists:sort(lambda_async:pmap(
+        [{peer, apply, [P, erlang, whereis, [lambda_broker]]} || P <- Peers])),
+    %% force bootstrap: bootstrap -> authority/broker
+    lambda_async:pmap([{peer, apply, [P, lambda_bootstrap, discover, []]} || P <- Peers]),
+    %%
+    [peer:apply(A, lambda_test, wait_connection, [Nodes]) || A <- AuthPeers],
     %%
     %% ask every single broker - "who are your authorities"
-    Authorities = [peer:apply(P, lambda_broker, authorities, [lambda_broker]) || P <- Peers],
-    Brokers = lists:sort([peer:apply(P, erlang, whereis, [lambda_broker]) || P <- Peers]),
-    Views = [lists:sort(peer:apply(P, lambda_authority, brokers, [lambda_authority]))
-        || {P, true} <- lists:zip(Peers, AuthBit)], %% query authorities, - which brokers they know?
+    BrokerKnownAuths = lambda_async:pmap([
+        {peer, apply, [P, lambda_broker, authorities, [lambda_broker]]} || P <- Peers]),
+    Views = lambda_async:pmap([{peer, apply, [P, lambda_authority, brokers, [lambda_authority]]}
+        || P <- AuthPeers]),
     %% stop everything
     lambda_async:pmap([{peer, stop, [P]} || P <- Peers]),
     %% ensure both authorities are here
-    [?assertEqual(AuthCount, length(A), {authorities, A}) || A <- Authorities],
+    [?assertEqual(AuthCount, length(A), {authorities, A}) || A <- BrokerKnownAuths],
     %% ensure they have the same view of the world, except for themselves
-    [?assertEqual(Brokers, V, {view, V, Brokers}) || V <- Views].
+    [?assertEqual(Brokers, lists:sort(V), {view, V, Brokers}) || V <- Views].
