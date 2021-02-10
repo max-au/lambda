@@ -30,6 +30,10 @@ init([]) ->
     %% Lambda discovery (epmd module, may be already used/installed via command line)
     DiscoSpec = [
         #{
+            id => lambda_metrics,
+            start => {lambda_metrics, start_link, []}
+        },
+        #{
             id => lambda_discovery,
             start => {lambda_discovery, start_link, []},
             modules => [lambda_discovery]

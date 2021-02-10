@@ -113,9 +113,13 @@ collect_replies([Pid | Tail] = All, Replies, TRef) ->
     end.
 
 wait_impl(Id, TRef) ->
-    {Running, Trapping} = erlang:get(Id),
-    Replies = collect_replies(lists:reverse(Running), [], TRef),
-    %% reset trap_exit flag if it was set
-    Trapping orelse erlang:process_flag(trap_exit, false),
-    erlang:erase(Id),
-    Replies.
+    case erlang:get(Id) of
+        {Running, Trapping} ->
+            Replies = collect_replies(lists:reverse(Running), [], TRef),
+            %% reset trap_exit flag if it was set
+            Trapping orelse erlang:process_flag(trap_exit, false),
+            erlang:erase(Id),
+            Replies;
+        undefined ->
+            []
+    end.

@@ -17,7 +17,10 @@
 %% API
 -export([
     start_link/0,
-    count/1
+    register_count/2,
+    count/1,
+    get_count/0,
+    get_count/1
 ]).
 
 -behaviour(gen_server).
@@ -30,13 +33,19 @@
     handle_info/2
 ]).
 
+-type counter_name() :: atom() | [atom()].
+
 -include_lib("kernel/include/logger.hrl").
 
 %%--------------------------------------------------------------------
 %% API
 
 %% Persistent term storage
--define (STORAGE, {?MODULE, storage}).
+-define (COUNT_STORAGE, {?MODULE, count}).
+-define (GAUGE_STORAGE, {?MODULE, gauge}).
+
+%% Current counters limit
+-define (MAX_COUNTERS, 1024).
 
 %% @doc
 %% Starts the server and links it to calling process.
@@ -45,15 +54,37 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, dirty, []).
 
 %% @doc
+%% Registers a new counter with requested index, for a specific term (name).
+%% It is an error to register the same index for a different term.
+-spec register_count(Idx :: pos_integer(), Name :: counter_name()) -> ok | {registered, counter_name()}.
+register_count(Idx, _Name) when Idx < 0; Idx > ?MAX_COUNTERS ->
+    error(invalid_index);
+register_count(Idx, Name) ->
+    gen_server:call(?MODULE, {register, Idx, Name}).
+
+%% @doc
 %% Bumps counter with the specified index.
 -spec count(Idx :: pos_integer()) -> ok.
 count(Idx) ->
-    atomics:add(persistent_term:get(?STORAGE), Idx, 1).
+    atomics:add(persistent_term:get(?COUNT_STORAGE), Idx, 1).
+
+%% @doc Returns all counters and their names
+-spec get_count() -> [{counter_name(), integer()}].
+get_count() ->
+    Names = gen_server:call(?MODULE, get),
+    [{Name, atomics:get(persistent_term:get(?COUNT_STORAGE), Idx)} || {Idx, Name} <- maps:to_list(Names)].
+
+%% @doc Returns specific counter
+-spec get_count(Idx :: pos_integer()) -> integer().
+get_count(Idx) ->
+    atomics:get(persistent_term:get(?COUNT_STORAGE), Idx).
 
 %%--------------------------------------------------------------------
 %% gen_server implementation
 
 -record(lambda_metrics_state, {
+    %% registered counter names
+    registered = #{} :: #{pos_integer() => counter_name()},
     %% time when last collection happened
     last_collection = erlang:monotonic_time(millisecond) :: integer()
 }).
@@ -63,14 +94,10 @@ count(Idx) ->
 %% Post data once a minute
 -define (POST_INTERVAL, 60_000).
 
-%% Current counters limit
--define (MAX_COUNTERS, 1024).
-
-
 init(dirty) ->
     %% If somehow this gen_server dies and restarts, existing counters
     %%  are still retained in persistent_term supported storage
-    try persistent_term:get(?STORAGE),
+    try persistent_term:get(?COUNT_STORAGE),
         false = process_flag(trap_exit, true),
         {ok, schedule_post(#lambda_metrics_state{})}
     catch
@@ -79,11 +106,19 @@ init(dirty) ->
     end;
 init(clean) ->
     Storage = atomics:new(?MAX_COUNTERS, []),
-    persistent_term:put(?STORAGE, Storage),
+    persistent_term:put(?COUNT_STORAGE, Storage),
     init(dirty).
 
-handle_call(_Req, _From, _State) ->
-    erlang:error(notsup).
+handle_call({register, Idx, Name}, _From, #lambda_metrics_state{registered = Reg} = State) ->
+    case maps:find(Idx, Reg) of
+        {ok, Known} ->
+            {reply, {registered, Known}, State};
+        error ->
+            {reply, ok, State#lambda_metrics_state{registered = Reg#{Idx => Name}}}
+    end;
+
+handle_call(get, _From, #lambda_metrics_state{registered = Reg} = State) ->
+    {reply, Reg, State}.
 
 -spec handle_cast(term(), state()) -> no_return().
 handle_cast(_Req, _State) ->
@@ -110,7 +145,7 @@ schedule_post(NextTick, Now, Interval) ->
     schedule_post(SafeTick, Now, Interval).
 
 post(_State) ->
-    Atomics = persistent_term:get(?STORAGE),
+    Atomics = persistent_term:get(?COUNT_STORAGE),
     #{size := Size} = atomics:info(Atomics),
     List = read(Size, Atomics, []),
     io:format("Counters: ~p~n", [List]).

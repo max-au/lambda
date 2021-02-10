@@ -67,7 +67,7 @@ discover() ->
 
 -type state() :: #lambda_bootstrap_state{}.
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: bootstrap " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
