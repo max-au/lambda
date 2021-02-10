@@ -65,15 +65,18 @@ start_link() ->
 %% API
 
 %% @doc returns a list of authorities currently connected.
+-spec authorities(lambda:dst()) -> [pid()].
 authorities(Authority) ->
     gen_server:call(Authority, authorities).
 
 %% @doc returns a list of brokers currently connected to this
 %%      authority.
+-spec brokers(lambda:dst()) -> [pid()].
 brokers(Authority) ->
     gen_server:call(Authority, brokers).
 
 %% @doc adds a map of potential authority peers
+-spec peers(lambda:dst(), #{lambda_discovery:location() => lambda_discovery:address()}) -> ok.
 peers(Authority, Peers) ->
     gen_server:cast(Authority, {peers, Peers}).
 
@@ -84,20 +87,18 @@ peers(Authority, Peers) ->
 -define (REMOTE_EXCHANGE_REDUNDANCY_FACTOR, 2).
 
 -record(lambda_authority_state, {
-    %% keeping address of "self" cached
-    self :: lambda_discovery:address(),
     %% modules known to the authority, mapped to exchanges
     exchanges = #{} :: #{module() => {Local :: pid(), Remote :: [pid()]}},
-    %% other authorities. When a new node comes up, it is expected to
+    %% all known authorities, including self. When a new node comes up, it is expected to
     %%  eventually connect to all authorities.
-    authorities = #{} :: #{pid() => lambda_discovery:address()},
+    authorities :: #{pid() => lambda_discovery:address()},
     %% brokers connected
     brokers = #{} :: #{pid() => lambda_discovery:address()}
 }).
 
 -type state() :: #lambda_authority_state{}.
 
-%% -define(DEBUG, true).
+-define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: authority " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -108,7 +109,7 @@ peers(Authority, Peers) ->
 init([]) ->
     Self = lambda_discovery:get_node(),
     ?dbg("starting", []),
-    {ok, #lambda_authority_state{self = Self}}.
+    {ok, #lambda_authority_state{authorities = #{self() => Self}}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
@@ -116,14 +117,38 @@ handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = St
 handle_call(brokers, _From, #lambda_authority_state{brokers = Brokers} = State) ->
     {reply, maps:keys(Brokers), State}.
 
-handle_cast({peers, Peers}, #lambda_authority_state{self = Self} = State) ->
-    ?dbg("discovering ~200p", [Peers]),
-    maps:map(
-        fun (Location, Addr) ->
-            ok = lambda_discovery:set_node(Location, Addr),
-            Location ! {authority, self(), Self}
-        end, Peers),
+handle_cast({peers, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
+    ?dbg("BOOTSTRAP ~200p (known ~200p)", [Peers, Auth]),
+    discover(Auth, Peers),
     {noreply, State}.
+
+%% authority discovered by another Authority
+handle_info({authority, Origin, New}, #lambda_authority_state{authorities = Auth, brokers = Brokers} = State) ->
+    case is_map_key(Origin, Auth) of
+        true ->
+            ?dbg("PEER KNOWN ~p", [Origin]),
+            {noreply, State};
+        false ->
+            %% new peer authority
+            ?dbg("NEW PEER ~p ~200p", [Origin, New]),
+            _MRef = monitor(process, Origin),
+            %% try discovering more of the ensemble
+            discover(Auth, New),
+            %% notify known brokers about new Authority
+            NewAddr = maps:get(Origin, New),
+            [lambda_broker:authorities(Broker, #{Origin => NewAddr}) || Broker <- maps:keys(Brokers)],
+            %% remember new authority
+            NewAuth = Auth#{Origin => NewAddr},
+            {noreply, State#lambda_authority_state{authorities = NewAuth}}
+    end;
+
+%% authority discovered by a Broker
+handle_info({discover, Broker, Addr}, #lambda_authority_state{authorities = Auth, brokers = Brokers} = State) ->
+    ?dbg("BROKER DISCOVERING by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
+    _MRef = monitor(process, Broker),
+    %% send self, and a list of other authorities to discover
+    erlang:send(Broker, {authority, self(), maps:get(self(), Auth)}, [noconnect]),
+    {noreply, State#lambda_authority_state{brokers = Brokers#{Broker => peer_addr(Addr)}}};
 
 %% Broker requesting exchanges for a Module
 handle_info({exchange, Module, Broker}, #lambda_authority_state{} = State) ->
@@ -134,57 +159,11 @@ handle_info({exchange, Module, Broker}, #lambda_authority_state{} = State) ->
     %% subscribe broker to all updates to exchanges for the module
     {noreply, State1#lambda_authority_state{}};
 
-%% authority discovered by another Authority
-handle_info({authority, Peer, _Addr}, State) when Peer =:= self() ->
-    %% discovered self
-    {noreply, State};
-handle_info({authority, Peer, Addr}, #lambda_authority_state{self = Self, authorities = Auth, brokers = Regs} = State)
-    when not is_map_key(Peer, Auth) ->
-    ?dbg("PEER AUTHORITY ~p ~200p", [Peer, Addr]),
-    _MRef = monitor(process, Peer),
-    %% exchange known brokers - including ourself!
-    erlang:send(Peer, {quorum, Auth#{self() => Self}, Regs}, [noconnect]),
-    {noreply, State#lambda_authority_state{authorities = Auth#{Peer => peer_addr(Addr)}}};
-
-%% authority discovered by a Broker
-handle_info({discover, Broker, Addr}, #lambda_authority_state{self = Self, authorities = Auth, brokers = Regs} = State) ->
-    ?dbg("BEING DISCOVERED by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
-    _MRef = monitor(process, Broker),
-    %% send self, and a list of other authorities to discover
-    erlang:send(Broker, {authority, self(), Self, Auth}, [noconnect]),
-    {noreply, State#lambda_authority_state{brokers = Regs#{Broker => peer_addr(Addr)}}};
-
 %% broker cancels a subscription for module exchange
 handle_info({cancel, _Module, _Broker}, #lambda_authority_state{exchanges = Exchanges} = State) ->
     ?dbg("cancel ~s subscription for ~s (~200p)", [_Module, node(_Broker), _Broker]),
     %% send self, and a list of other authorities to discover
     {noreply, State#lambda_authority_state{exchanges = Exchanges}};
-
-%% exchanging information from another Authority
-handle_info({quorum, MoreAuth, MoreRegs}, #lambda_authority_state{self = Self, authorities = Others, brokers = Regs} = State) ->
-    ?dbg("AUTH QUORUM ~200p ~200p", [MoreAuth, MoreRegs]),
-    %% merge authorities.
-    UpdatedAuth = maps:fold(
-        fun (NewAuth, _Addr, Existing) when is_map_key(NewAuth, Existing) ->
-                Existing;
-            (NewAuth, Addr, Existing) ->
-                _MRef = erlang:monitor(process, NewAuth),
-                Existing#{NewAuth => Addr}
-        end, Others, MoreAuth),
-    %% merge brokers, notifying newly discovered
-    SelfAuthMsg = {authority, self(), Self, Others},
-    UpdatedReg = maps:fold(
-        fun (Reg, _Addr, ExReg) when is_map_key(Reg, ExReg) ->
-                ExReg;
-            (Reg, Addr, ExReg) ->
-                lambda_discovery:set_node(node(Reg), Addr), %% TODO: may need some overload protection for mass exchange
-                _MRef = erlang:monitor(process, Reg),
-                %% don't suspend the authority to avoid lock-up when dist connection busy
-                %% TODO: figure out how dist can be busy when we have never sent anything before
-                ok = erlang:send(Reg, SelfAuthMsg, [nosuspend]),
-                ExReg#{Reg => Addr}
-        end, Regs, MoreRegs),
-    {noreply, State#lambda_authority_state{authorities = UpdatedAuth, brokers = UpdatedReg}};
 
 %% Handling disconnects from authorities and brokers
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{authorities = Auth, brokers = Regs} = State) ->
@@ -204,6 +183,14 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{auth
 
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+discover(Existing, New) ->
+    maps:map(
+        fun (Location, Addr) when not is_map_key(Location, Existing) ->
+            ok = lambda_discovery:set_node(Location, Addr),
+            Location ! {authority, self(), Existing};
+            (_, _) -> ok
+        end, New).
 
 ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->
     case maps:find(Module, Exch) of

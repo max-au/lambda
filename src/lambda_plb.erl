@@ -41,6 +41,8 @@
 -type options() :: #{
     %% capacity to request from all servers combined
     capacity := non_neg_integer(),
+    %% version or version range to accept
+    version => integer(),
     %% local broker process (lambda_broker by default)
     broker => lambda:dst(),
     %% disable automatic meta query/compilation

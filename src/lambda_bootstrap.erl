@@ -13,7 +13,8 @@
 
 %% API
 -export([
-    start_link/2
+    start_link/2,
+    discover/0
 ]).
 
 -behaviour(gen_server).
@@ -33,7 +34,9 @@
 
 -type bootspec() ::
     {static, #{lambda_discovery:location() => lambda_discovery:address()}} |
-    {epmd, [node()]}.
+    {epmd, [node()]} |
+    {file, file:filename_all()} | %% consult() file on a file system (for test purposes)
+    {custom, module(), atom(), [term()]}. %% callback function
 
 %% @doc
 %% Starts the server and links it to calling process.
@@ -41,6 +44,12 @@
 -spec start_link([pid() | atom()], bootspec()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link([_ | _] = Subs, Bootspec) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, {Subs, Bootspec}, []).
+
+%% @doc Forces discovery without waiting for timeout.
+%%      Useful for testing.
+-spec discover() -> ok.
+discover() ->
+    gen_server:cast(?MODULE, discover).
 
 %%--------------------------------------------------------------------
 %% gen_server implementation
@@ -58,14 +67,14 @@ start_link([_ | _] = Subs, Bootspec) ->
 
 -type state() :: #lambda_bootstrap_state{}.
 
-%% -define(DEBUG, true).
+-define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: bootstrap " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
 -define (dbg(Fmt, Arg), ok).
 -endif.
 
-%% Attempt to resolve every 10 seconds
+%% By default, attempt to resolve every 10 seconds
 -define (LAMBDA_BOOTSTRAP_INTERVAL, 10000).
 
 init({Subs, Spec}) ->
@@ -74,9 +83,10 @@ init({Subs, Spec}) ->
 handle_call(_Req, _From, _State) ->
     erlang:error(notsup).
 
--spec handle_cast(term(), state()) -> no_return().
-handle_cast(_Req, _State) ->
-    erlang:error(notsup).
+-spec handle_cast(discover, state()) -> {noreply, state()}.
+handle_cast(discover, #lambda_bootstrap_state{timer = Timer} = State) ->
+    Timer =/= undefined andalso erlang:cancel_timer(Timer),
+    {noreply, handle_resolve(State)}.
 
 %% timer handler
 handle_info(resolve, State) ->
@@ -90,9 +100,10 @@ handle_resolve(#lambda_bootstrap_state{bootstrap = Prev, spec = Spec, subscriber
         Prev ->
             reschedule(State);
         New ->
-            ?dbg("resolved ~200p into ~200p (was ~200p)", [Spec, New, Prev]),
-            %% notify subscribers of changes, TODO: make diff Prev/New
-            [gen_server:cast(Sub, {peers, New}) || Sub <- Subs],
+            ?dbg("resolved for ~200p into ~200p", [Subs, New]),
+            %% notify subscribers of changes
+            Diff = maps:without(maps:keys(Prev), New),
+            [gen_server:cast(Sub, {peers, Diff}) || Sub <- Subs],
             reschedule(State#lambda_bootstrap_state{bootstrap = New})
     end.
 
@@ -120,7 +131,22 @@ resolve({epmd, Epmd}) ->
     catch _:_ ->
         case inet_db:res_option(inet6) of true -> inet6; false -> inet end
     end,
-    resolve_epmd(Epmd, Family, #{}).
+    resolve_epmd(Epmd, Family, #{});
+
+resolve({file, File}) ->
+    IsAuthority = is_pid(whereis(lambda_authority)),
+    case file:consult(File) of
+        {ok, Auths} ->
+            maps:from_list(Auths);
+        {error, enoent} when IsAuthority ->
+            SelfAddr = lambda_discovery:get_node(),
+            Self = {lambda_authority, node()},
+            ?dbg("creating authority ~200p => ~200p", [Self, SelfAddr]),
+            file:write_file(File, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}]))),
+            #{Self => SelfAddr};
+        _ ->
+            #{}
+    end.
 
 resolve_epmd([], _Family, Acc) ->
     Acc;
@@ -141,11 +167,11 @@ resolve_epmd([Node | Tail], Family, Acc) ->
             resolve_epmd(Tail, Family, Acc)
     end.
 
-%% the "original" module is created dynamically in runtime
 resolve_port(Name, Ip) ->
     {port, Port, _Version} =
         try erl_epmd:port_please(Name, Ip)
         catch error:undef ->
+            %% the "original" module is created dynamically in runtime
             AntiDialyzer = list_to_atom("erl_epmd_ORIGINAL"),
             AntiDialyzer:port_please(Name, Ip) end,
     Port.

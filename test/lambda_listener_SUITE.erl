@@ -16,7 +16,6 @@
     broker_monitor/0, broker_monitor/1
 ]).
 
--include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 suite() ->

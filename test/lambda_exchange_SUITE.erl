@@ -19,7 +19,6 @@
     basic/0, basic/1
 ]).
 
--include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 suite() ->
@@ -36,8 +35,8 @@ init_per_suite(Config) ->
     [{broker, Broker}, {physical, Physical} | Config].
 
 end_per_suite(Config) ->
-    gen_server:stop(?config(broker, Config)),
-    gen_server:stop(?config(physical, Config)),
+    gen_server:stop(proplists:get_value(broker, Config)),
+    gen_server:stop(proplists:get_value(physical, Config)),
     proplists:delete(broker, proplists:delete(physical, Config)).
 
 init_per_testcase(TestCase, Config) ->
@@ -45,7 +44,7 @@ init_per_testcase(TestCase, Config) ->
     [{exchange, Pid} | Config].
 
 end_per_testcase(_TestCase, Config) ->
-    gen_server:stop(?config(exchange, Config)),
+    gen_server:stop(proplists:get_value(exchange, Config)),
     proplists:delete(exchange, Config).
 
 %%--------------------------------------------------------------------
@@ -57,8 +56,8 @@ basic() ->
 basic(Config) when is_list(Config) ->
     Cap = 100,
     BuyId = 1,
-    lambda_exchange:sell(?config(exchange, Config), contact, 0, Cap, #{}),
-    lambda_exchange:buy(?config(exchange, Config), BuyId, Cap, #{}),
+    lambda_exchange:sell(proplists:get_value(exchange, Config), contact, 0, Cap, #{}),
+    lambda_exchange:buy(proplists:get_value(exchange, Config), BuyId, Cap, #{}),
     receive
         {order, BuyId, ?FUNCTION_NAME, [{contact, Cap, #{}}]} ->
             ok;

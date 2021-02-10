@@ -55,3 +55,9 @@ how a PLB (buyer) can connect to listener (seller).
 ## Current limitations
 Lambda implementation does not allow more than one outstanding "sell" or "buy" order per
 listener and PLB accordingly.
+
+# Update and hot code load
+PLB can perform hot code reload of the client-side proxy, and listener can publish new
+code of a module when it is loaded. Implementation follows OTP practices, when a new
+PLB is started first, acquiring necessary capacity, then performing hot code load to
+update proxy code.

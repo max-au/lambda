@@ -20,7 +20,6 @@
     peer/0, peer/1
 ]).
 
--include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 suite() ->
@@ -41,7 +40,7 @@ init_per_group(_Group, Config) ->
     Config.
 
 end_per_group(local, Config) ->
-    gen_server:stop(?config(disco, Config)),
+    gen_server:stop(proplists:get_value(disco, Config)),
     proplists:delete(disco, Config);
 end_per_group(_Group, Config) ->
     Config.
@@ -71,7 +70,7 @@ basic(Config) when is_list(Config) ->
     %% start root (empty) authority
     {AuthPid, Bootstrap} = start_authority(#{}),
     %% start a number of (unnamed) brokers pointing at authority
-    Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 8)],
+    Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 2)],
     %% ensure all brokers have processed everything. Twice.
     lambda_test:sync([AuthPid | Brokers]),
     %% ensure authority has discovered all of them
@@ -80,16 +79,15 @@ basic(Config) when is_list(Config) ->
     %% start second authority
     {Auth2, _} = start_authority(Bootstrap),
     %% let authorities sync. White-box testing here, knowing the protocol.
-    lambda_test:sync([AuthPid, Auth2, AuthPid, Auth2]),
+    lambda_test:sync([Auth2, AuthPid | Brokers]),
     %% ensure both authorities have the same list of connected processes
     ?assertEqual(lists:sort(lambda_authority:brokers(AuthPid)),
         lists:sort(lambda_authority:brokers(Auth2))),
     %% ensure authorities know each other
-    ?assertEqual([Auth2], lambda_authority:authorities(AuthPid)),
-    ?assertEqual([AuthPid], lambda_authority:authorities(Auth2)),
+    Auths = lists:sort([AuthPid, Auth2]),
+    [?assertEqual(Auths, lists:sort(lambda_authority:authorities(AP))) || AP <- Auths],
     %% ensure brokers know authorities too
     lambda_test:sync(Brokers),
-    Auths = lists:sort([AuthPid, Auth2]),
     [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Brokers],
     %% all done, stop now
     [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2]].
