@@ -137,7 +137,7 @@ cancel(Srv, Proc) ->
 
 -type state() :: #lambda_broker_state{}.
 
-%% -define(DEBUG, true).
+-define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -197,6 +197,7 @@ handle_cast({cancel, Trader}, State) ->
 
 handle_cast({peers, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
     %% initial discovery
+    ?dbg("discovering authorities ~200p", [Peers]),
     discover(Auth, Peers, Self),
     {noreply, State}.
 
@@ -206,14 +207,15 @@ handle_info({authority, NewAuth, _AuthAddr, _Peers}, #lambda_broker_state{author
     {noreply, State};
 
 %% authority discovered
-handle_info({authority, NewAuth, AuthAddr, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
-    ?dbg("got authority ~s:~p (~200p)", [node(NewAuth), NewAuth, AuthAddr]),
-    _MRef = erlang:monitor(process, NewAuth),
+handle_info({authority, Authority, AuthAddr, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
+    ?dbg("got authority ~s:~p (~200p)", [node(Authority), Authority, AuthAddr]),
+    _MRef = erlang:monitor(process, Authority),
     %% new authority may know more exchanges for outstanding orders
-    [subscribe_exchange(#{NewAuth => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
+    [subscribe_exchange(#{Authority => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
     %% extra discovery for authorities known remotely but not locally
-    discover(Auth, Peers, Self),
-    {noreply, State#lambda_broker_state{authority = Auth#{NewAuth => AuthAddr}}};
+    NewAuth = Auth#{Authority => AuthAddr},
+    discover(NewAuth, Peers, Self),
+    {noreply, State#lambda_broker_state{authority = NewAuth}};
 
 %% exchange list updates for Module
 handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchanges = Exchanges, orders = Orders} = State) ->
@@ -289,11 +291,11 @@ handle_info(discover, #lambda_broker_state{authority = Authority} = State) when 
 
 discover(Existing, New, Self) ->
     maps:map(
-        fun (Location, Addr) when not is_map_key(Location, Existing) ->
-            ?dbg("~s discovering ~200p of ~300p", [node(), Location, Addr]),
-            lambda_discovery:set_node(Location, Addr),
-            Location ! {discover, self(), Self};
-            (_, _) -> ok
+        fun (Location, _Addr) when is_map_key(Location, Existing) ->
+                ok;
+            (Location, Addr) ->
+                lambda_discovery:set_node(Location, Addr),
+                Location ! {discover, self(), Self}
         end, New).
 
 cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors, exchanges = Exchanges} = State) ->

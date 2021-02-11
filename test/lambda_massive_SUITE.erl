@@ -6,7 +6,6 @@
 
 %% Test server callbacks
 -export([
-    suite/0,
     all/0,
     init_per_suite/1,
     end_per_suite/1
@@ -14,24 +13,25 @@
 
 %% Test cases exports
 -export([
-    basic/0, basic/1
+    basic/0, basic/1,
+    proper/0, proper/1,
+    reconnect/0, reconnect/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
 
-suite() ->
-    [{timetrap, {seconds, 15}}].
-
 init_per_suite(Config) ->
     _ = application:load(lambda),
     _ = application:load(sasl),
-    Config.
+    Priv = proplists:get_value(priv_dir, Config),
+    Boot = create_release(Priv),
+    [{boot, Boot} | Config].
 
 end_per_suite(Config) ->
     Config.
 
 all() ->
-    [basic].
+    [basic, reconnect, proper].
 
 %%--------------------------------------------------------------------
 %% Convenience & data
@@ -69,6 +69,9 @@ start_tier(Boot, Count, AuthorityCount, ServiceLocator) when Count >= AuthorityC
         end
         || Seq <- lists:seq(1, Count)]).
 
+stop_tier(Peers) ->
+    lambda_async:pmap([{peer, stop, [P]} || {P, _, _} <- Peers]).
+
 %psync(Peers, Name) ->
 %    lambda_async:pmap([{peer, apply, [P, sys, get_state, [Name]]} || P <- Peers]).
 %psync(Peers, Via, Name) ->
@@ -98,9 +101,8 @@ verify_topo(Boot, ServiceLocator, TotalCount, AuthCount) ->
     Views = lambda_async:pmap([{peer, apply, [P, lambda_authority, brokers, [lambda_authority]]}
         || P <- AuthPeers]),
     %% stop everything
-    lambda_async:pmap([{peer, stop, [P]} || P <- Peers]),
+    stop_tier(AllPeers),
     %% ensure both authorities are here
-    [?assert(is_list(A), {authorities, P, A}) || {P, A} <- lists:zip(Nodes, BrokerKnownAuths)],
     [?assertEqual(AuthCount, length(A), {authorities, A}) || A <- BrokerKnownAuths],
     %% ensure they have the same view of the world, except for themselves
     [?assertEqual(Brokers, lists:sort(V), {view, V, Brokers}) || V <- Views].
@@ -110,16 +112,51 @@ verify_topo(Boot, ServiceLocator, TotalCount, AuthCount) ->
 
 basic() ->
     [{doc, "Make a single release, start several copies of it using customised settings"},
-        {timetrap, {seconds, 600}}].
+        {timetrap, {seconds, 180}}].
 
 basic(Config) when is_list(Config) ->
     Priv = proplists:get_value(priv_dir, Config),
-    Boot = create_release(Priv),
+    Boot = proplists:get_value(boot, Config),
     %% run many combinations
     [
         begin
             ct:pal("Running ~b nodes with ~b authorities~n", [Total, Auth]),
-            ServiceLocator = filename:join(Priv, "service.loc"),
-            file:delete(ServiceLocator),
+            ServiceLocator = filename:join(Priv,
+                lists:flatten(io_lib:format("service-~s~b_~b.loc", [?FUNCTION_NAME, Total, Auth]))),
             verify_topo(Boot, ServiceLocator, Total, Auth)
         end || Total <- [2, 4, 10, 32, 100], Auth <- [1, 2, 3, 6], Total >= Auth].
+
+reconnect() ->
+    [{doc, "Ensure that broker reconnects to authorities"}].
+
+reconnect(Config) when is_list(Config) ->
+    Priv = proplists:get_value(priv_dir, Config),
+    Boot = proplists:get_value(boot, Config),
+    ServiceLocator = filename:join(Priv, "reconnect-service.loc"),
+    %% start a tier, with several authorities
+    AllPeers = start_tier(Boot, 4, 2, ServiceLocator),
+    {Peers, [A1, A2 | _], _} = lists:unzip3(AllPeers),
+    Victim = lists:nth(4, Peers),
+    Auths = lists:sort([A1, A2]),
+    %% wait for expected connections
+    io:format(standard_error, "initiating connections~n", []),
+    ok = peer:apply(Victim, lambda_bootstrap, discover, []),
+    ok = peer:apply(Victim, lambda_test, wait_connection, [Auths]),
+    io:format(standard_error, "connection established~n", []),
+    %% force disconnect last node from first 2
+    ?assertEqual(Auths, lists:sort(peer:apply(Victim, erlang, nodes, []))),
+    true = peer:apply(Victim, net_kernel, disconnect, [A1]),
+    true = peer:apply(Victim, net_kernel, disconnect, [A2]),
+    %% verify it has been disconnected
+    [] = peer:apply(Victim, erlang, nodes, []),
+    %% force bootstrap
+    ok = peer:apply(Victim, lambda_bootstrap, discover, []),
+    %% must be connected again
+    ok = peer:apply(Victim, lambda_test, wait_connection, [Auths]),
+    stop_tier(AllPeers).
+
+proper() ->
+    [{doc, "Property-based test verifying topology, mesh-connected for authorities, and none for lambdas"}].
+
+proper(Config) when is_list(Config) ->
+    ok.

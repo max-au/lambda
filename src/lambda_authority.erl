@@ -126,19 +126,20 @@ handle_cast({peers, Peers}, #lambda_authority_state{authorities = Auth} = State)
 handle_info({authority, Origin, New}, #lambda_authority_state{authorities = Auth, brokers = Brokers} = State) ->
     case is_map_key(Origin, Auth) of
         true ->
-            ?dbg("PEER KNOWN ~p", [Origin]),
+            ?dbg("PEER KNOWN ~p", [if Origin =:= self() -> "self"; true -> Origin end]),
             {noreply, State};
         false ->
             %% new peer authority
             ?dbg("NEW PEER ~p ~200p", [Origin, New]),
             _MRef = monitor(process, Origin),
-            %% try discovering more of the ensemble
-            discover(Auth, New),
-            %% notify known brokers about new Authority
+            %% add Origin to known authorities (avoid looping back)
             NewAddr = maps:get(Origin, New),
+            NewAuth = Auth#{Origin => NewAddr},
+            %% try discovering more of the ensemble
+            discover(NewAuth, New),
+            %% notify known brokers about new Authority
             [lambda_broker:authorities(Broker, #{Origin => NewAddr}) || Broker <- maps:keys(Brokers)],
             %% remember new authority
-            NewAuth = Auth#{Origin => NewAddr},
             {noreply, State#lambda_authority_state{authorities = NewAuth}}
     end;
 
@@ -186,10 +187,11 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{auth
 
 discover(Existing, New) ->
     maps:map(
-        fun (Location, Addr) when not is_map_key(Location, Existing) ->
-            ok = lambda_discovery:set_node(Location, Addr),
-            Location ! {authority, self(), Existing};
-            (_, _) -> ok
+        fun (Location, _Addr) when is_map_key(Location, Existing) ->
+                ok;
+            (Location, Addr) ->
+                ok = lambda_discovery:set_node(Location, Addr),
+                Location ! {authority, self(), Existing}
         end, New).
 
 ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->
