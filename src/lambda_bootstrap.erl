@@ -95,17 +95,14 @@ handle_info(resolve, State) ->
 %%--------------------------------------------------------------------
 %% Internal implementation
 
-handle_resolve(#lambda_bootstrap_state{bootstrap = Prev, spec = Spec, subscribers = Subs} = State) ->
-    case resolve(Spec) of
-        Prev ->
-            reschedule(State);
-        New ->
-            ?dbg("resolved for ~200p into ~200p", [Subs, New]),
-            %% notify subscribers of changes
-            Diff = maps:without(maps:keys(Prev), New),
-            [gen_server:cast(Sub, {peers, Diff}) || Sub <- Subs],
-            reschedule(State#lambda_bootstrap_state{bootstrap = New})
-    end.
+handle_resolve(#lambda_bootstrap_state{spec = Spec, subscribers = Subs} = State) ->
+    New = resolve(Spec),
+    ?dbg("resolved for ~200p into ~200p", [Subs, New]),
+    %% notify subscribers of changes
+    %% TODO: think how to avoid bootstrapping over and over
+    Diff = New, %% maps:without(maps:keys(Prev), New),
+    [gen_server:cast(Sub, {peers, Diff}) || Sub <- Subs],
+    reschedule(State#lambda_bootstrap_state{bootstrap = New}).
 
 reschedule(State) ->
     TRef = erlang:send_after(?LAMBDA_BOOTSTRAP_INTERVAL, self(), resolve),
@@ -134,18 +131,27 @@ resolve({epmd, Epmd}) ->
     resolve_epmd(Epmd, Family, #{});
 
 resolve({file, File}) ->
-    IsAuthority = is_pid(whereis(lambda_authority)),
-    case file:consult(File) of
-        {ok, Auths} ->
-            maps:from_list(Auths);
-        {error, enoent} when IsAuthority ->
-            SelfAddr = lambda_discovery:get_node(),
-            Self = {lambda_authority, node()},
-            ?dbg("creating authority ~200p => ~200p", [Self, SelfAddr]),
-            file:write_file(File, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}]))),
-            #{Self => SelfAddr};
-        _ ->
-            #{}
+    case is_pid(whereis(lambda_authority)) of
+        true ->
+            case file:open(File, [exclusive]) of
+                {ok, Fd} ->
+                    SelfAddr = lambda_discovery:get_node(),
+                    Self = {lambda_authority, node()},
+                    ?dbg("creating authority ~200p => ~200p", [Self, SelfAddr]),
+                    ok = file:write(Fd, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}]))),
+                    file:close(Fd),
+                    #{Self => SelfAddr};
+                {error, eexist} ->
+                    {ok, Auths} = file:consult(File),
+                    maps:from_list(Auths)
+            end;
+        false ->
+            case file:consult(File) of
+                {ok, Auths} ->
+                    maps:from_list(Auths);
+                _ ->
+                    #{}
+            end
     end.
 
 resolve_epmd([], _Family, Acc) ->

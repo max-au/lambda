@@ -98,7 +98,7 @@ peers(Authority, Peers) ->
 
 -type state() :: #lambda_authority_state{}.
 
-%% -define(DEBUG, true).
+-define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: authority " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -130,13 +130,13 @@ handle_info({authority, Origin, New}, #lambda_authority_state{authorities = Auth
             {noreply, State};
         false ->
             %% new peer authority
-            ?dbg("NEW PEER ~p ~200p", [Origin, New]),
+            ?dbg("NEW PEER ~p ~200p (known ~200p)", [Origin, New, Auth]),
             _MRef = monitor(process, Origin),
             %% add Origin to known authorities (avoid looping back)
             NewAddr = maps:get(Origin, New),
             NewAuth = Auth#{Origin => NewAddr},
             %% try discovering more of the ensemble
-            discover(NewAuth, New),
+            discover(Auth, New),
             %% notify known brokers about new Authority
             [lambda_broker:authorities(Broker, #{Origin => NewAddr}) || Broker <- maps:keys(Brokers)],
             %% remember new authority
@@ -191,6 +191,7 @@ discover(Existing, New) ->
                 ok;
             (Location, Addr) ->
                 ok = lambda_discovery:set_node(Location, Addr),
+                ?dbg("looking for ~200p (to bring ~200p)", [Location, Existing]),
                 Location ! {authority, self(), Existing}
         end, New).
 

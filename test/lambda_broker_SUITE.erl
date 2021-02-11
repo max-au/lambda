@@ -71,15 +71,16 @@ basic(Config) when is_list(Config) ->
     {AuthPid, Bootstrap} = start_authority(#{}),
     %% start a number of (unnamed) brokers pointing at authority
     Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 8)],
-    %% ensure all brokers have processed everything. Twice.
-    lambda_test:sync([AuthPid | Brokers]),
+    %% ensure authorities finished processing from broker point of view
+    [lambda_test:sync_via(Broker, AuthPid) || Broker <- Brokers],
     %% ensure authority has discovered all of them
     ?assertEqual(lists:sort(Brokers), lists:sort(lambda_authority:brokers(AuthPid))),
     [?assertEqual([AuthPid], lambda_broker:authorities(R)) || R <- Brokers],
     %% start second authority
     {Auth2, _} = start_authority(Bootstrap),
     %% let authorities sync. White-box testing here, knowing the protocol.
-    lambda_test:sync([Auth2, AuthPid | Brokers]),
+    lambda_test:sync_via(Auth2, AuthPid),
+    lambda_test:sync_via(AuthPid, Auth2),
     %% ensure both authorities have the same list of connected processes
     ?assertEqual(lists:sort(lambda_authority:brokers(AuthPid)),
         lists:sort(lambda_authority:brokers(Auth2))),

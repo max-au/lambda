@@ -139,8 +139,9 @@ dist_up_down(Config) when is_list(Config) ->
     ?assertEqual(ok, peer:connect(Pid, 5000)),
     ?assertEqual(ok, peer:disconnect(Pid, 5000)),
     ?assertEqual(ok, peer:connect(Pid, 5000)),
-    peer:stop(Pid),
+    timer:sleep(500),
     ct:capture_stop(),
+    peer:stop(Pid),
     Texts = ct:capture_get(),
     ?assertEqual(["out"], Texts).
 

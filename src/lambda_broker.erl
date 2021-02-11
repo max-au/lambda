@@ -137,7 +137,7 @@ cancel(Srv, Proc) ->
 
 -type state() :: #lambda_broker_state{}.
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.

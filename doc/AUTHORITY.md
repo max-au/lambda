@@ -5,13 +5,15 @@ Authority implements mesh-connected ensemble.
 Authority process accepts:
  * 'peers' message containing list of potential candidates for other authorities.
    When this message is matched, authority emits 'authority' message for every peer
-   in the list, which serves as discovery process.
+   in the list, containing origin (self) address and all other known authorities.
+ * 'authority' message from other authorities in the ensemble, containing peer
+   authority address and list of authorities known to peer.
+   Upon matching, authority emits 'authority' message to all known brokers,
+   and starts monitoring origin (sender of the message).
+   Authority emits 'authority' messages to every other authority that is not
+   yet monitored.
  * 'discover' message from brokers. Authority monitors all discovered brokers, and
    sends 'authority' message (as confirmation of discovery)
- * 'authority' message from other authorities in the ensemble.
-   Upon matching, authority emits 'authority' message to all known brokers.
-   The message also contains list of potentially new authorities to discover,
-   triggering more discoveries
  * 'DOWN' message from another broker or authority.
 
 Authority process emits:
