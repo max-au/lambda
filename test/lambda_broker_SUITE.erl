@@ -81,6 +81,7 @@ basic(Config) when is_list(Config) ->
     %% let authorities sync. White-box testing here, knowing the protocol.
     lambda_test:sync_via(Auth2, AuthPid),
     lambda_test:sync_via(AuthPid, Auth2),
+    lambda_test:sync(Brokers),
     %% ensure both authorities have the same list of connected processes
     ?assertEqual(lists:sort(lambda_authority:brokers(AuthPid)),
         lists:sort(lambda_authority:brokers(Auth2))),

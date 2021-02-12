@@ -71,7 +71,7 @@ authorities(Broker) ->
 %% @doc adds lists of authorities known
 -spec authorities(lambda:dst(), #{pid() => lambda_discovery:address()}) -> [pid()].
 authorities(Broker, Authorities) ->
-    gen_server:cast(Broker, {peers, Authorities}).
+    Broker ! {peers, Authorities}.
 
 %%--------------------------------------------------------------------
 %% Extended API
@@ -193,13 +193,13 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
 
 %% handles cancellations for both sell and buy orders (should it be split?)
 handle_cast({cancel, Trader}, State) ->
-    {noreply, cancel(Trader, true, State)};
+    {noreply, cancel(Trader, true, State)}.
 
-handle_cast({peers, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
+handle_info({peers, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
     %% initial discovery
     ?dbg("discovering authorities ~200p", [Peers]),
     discover(Auth, Peers, Self),
-    {noreply, State}.
+    {noreply, State};
 
 handle_info({authority, NewAuth, _AuthAddr, _Peers}, #lambda_broker_state{authority = Auth} = State)
     when is_map_key(NewAuth, Auth) ->

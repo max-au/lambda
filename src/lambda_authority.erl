@@ -78,7 +78,7 @@ brokers(Authority) ->
 %% @doc adds a map of potential authority peers
 -spec peers(lambda:dst(), #{lambda_discovery:location() => lambda_discovery:address()}) -> ok.
 peers(Authority, Peers) ->
-    gen_server:cast(Authority, {peers, Peers}).
+    Authority ! {peers, Peers}.
 
 %%--------------------------------------------------------------------
 %% Cluster authority
@@ -98,7 +98,7 @@ peers(Authority, Peers) ->
 
 -type state() :: #lambda_authority_state{}.
 
--define(DEBUG, true).
+%% -define(DEBUG, true).
 -ifdef (DEBUG).
 -define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: authority " ++ Fmt ++ "~n", [node(), self() | Arg])).
 -else.
@@ -107,9 +107,7 @@ peers(Authority, Peers) ->
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    Self = lambda_discovery:get_node(),
-    ?dbg("starting", []),
-    {ok, #lambda_authority_state{authorities = #{self() => Self}}}.
+    {ok, #lambda_authority_state{authorities = #{self() => lambda_discovery:get_node()}}}.
 
 handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = State) ->
     {reply, maps:keys(Auth), State};
@@ -117,38 +115,55 @@ handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = St
 handle_call(brokers, _From, #lambda_authority_state{brokers = Brokers} = State) ->
     {reply, maps:keys(Brokers), State}.
 
-handle_cast({peers, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
-    ?dbg("BOOTSTRAP ~200p (known ~200p)", [Peers, Auth]),
-    discover(Auth, Peers),
-    {noreply, State}.
+handle_cast(_Req, _State) ->
+    erlang:error(notsup).
 
-%% authority discovered by another Authority
-handle_info({authority, Origin, New}, #lambda_authority_state{authorities = Auth, brokers = Brokers} = State) ->
-    case is_map_key(Origin, Auth) of
+%% bootstrap: try to discover not yet known Peers
+handle_info({peers, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
+    ?dbg("NEW PEERS ~200p", [maps:without(maps:keys(Auth), Peers)]),
+    discover(Auth, Peers),
+    {noreply, State};
+
+%% syn: initiator is discovering us, sending a list of Peers known to it
+handle_info({syn, Initiator, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
+    ?dbg("SYN from ~p ~200p (brokers ~200p)", [Initiator, Peers, maps:keys(State#lambda_authority_state.brokers)]),
+    %% remember initiator
+    _MRef = monitor(process, Initiator),
+    Contact = maps:get(Initiator, Peers),
+    %% acknowledge: send our own view to initiator
+    Initiator ! {ack, self(), Auth},
+    %% initiator may have sent us a few more peers we are not aware about
+    NewAuth = Auth#{Initiator => Contact},
+    discover(NewAuth, Peers),
+    %% tell known brokers to look for a new authority
+    [lambda_broker:authorities(Broker, #{Initiator => Contact})
+        || Broker <- maps:keys(State#lambda_authority_state.brokers)],
+    {noreply, State#lambda_authority_state{authorities = NewAuth}};
+
+%% ack: we are the initiator
+handle_info({ack, Origin, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
+    case is_map_key(Origin, Auth) orelse Origin =:= self() of
         true ->
             ?dbg("PEER KNOWN ~p", [if Origin =:= self() -> "self"; true -> Origin end]),
             {noreply, State};
         false ->
             %% new peer authority
-            ?dbg("NEW PEER ~p ~200p (known ~200p)", [Origin, New, Auth]),
+            ?dbg("ACK ~p (known ~200p)", [Origin, Peers]),
             _MRef = monitor(process, Origin),
-            %% add Origin to known authorities (avoid looping back)
-            NewAddr = maps:get(Origin, New),
-            NewAuth = Auth#{Origin => NewAddr},
-            %% try discovering more of the ensemble
-            discover(Auth, New),
+            Contact = maps:get(Origin, Peers),
             %% notify known brokers about new Authority
-            [lambda_broker:authorities(Broker, #{Origin => NewAddr}) || Broker <- maps:keys(Brokers)],
-            %% remember new authority
-            {noreply, State#lambda_authority_state{authorities = NewAuth}}
+            [lambda_broker:authorities(Broker, #{Origin => Contact})
+                || Broker <- maps:keys(State#lambda_authority_state.brokers)],
+            {noreply, State#lambda_authority_state{authorities = Auth#{Origin => Contact}}}
     end;
 
 %% authority discovered by a Broker
 handle_info({discover, Broker, Addr}, #lambda_authority_state{authorities = Auth, brokers = Brokers} = State) ->
-    ?dbg("BROKER DISCOVERING by ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
+    ?dbg("BROKER from ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
+    Self = maps:get(self(), Auth),
     _MRef = monitor(process, Broker),
     %% send self, and a list of other authorities to discover
-    erlang:send(Broker, {authority, self(), maps:get(self(), Auth), Auth}, [noconnect]),
+    erlang:send(Broker, {authority, self(), Self, Auth}, [noconnect]),
     {noreply, State#lambda_authority_state{brokers = Brokers#{Broker => peer_addr(Addr)}}};
 
 %% Broker requesting exchanges for a Module
@@ -191,8 +206,7 @@ discover(Existing, New) ->
                 ok;
             (Location, Addr) ->
                 ok = lambda_discovery:set_node(Location, Addr),
-                ?dbg("looking for ~200p (to bring ~200p)", [Location, Existing]),
-                Location ! {authority, self(), Existing}
+                Location ! {syn, self(), Existing}
         end, New).
 
 ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->

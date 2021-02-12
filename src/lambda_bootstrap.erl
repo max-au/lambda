@@ -101,7 +101,7 @@ handle_resolve(#lambda_bootstrap_state{spec = Spec, subscribers = Subs} = State)
     %% notify subscribers of changes
     %% TODO: think how to avoid bootstrapping over and over
     Diff = New, %% maps:without(maps:keys(Prev), New),
-    [gen_server:cast(Sub, {peers, Diff}) || Sub <- Subs],
+    [Sub ! {peers, Diff} || Sub <- Subs],
     reschedule(State#lambda_bootstrap_state{bootstrap = New}).
 
 reschedule(State) ->
@@ -142,16 +142,19 @@ resolve({file, File}) ->
                     file:close(Fd),
                     #{Self => SelfAddr};
                 {error, eexist} ->
-                    {ok, Auths} = file:consult(File),
-                    maps:from_list(Auths)
+                    retry_file(File)
             end;
         false ->
-            case file:consult(File) of
-                {ok, Auths} ->
-                    maps:from_list(Auths);
-                _ ->
-                    #{}
-            end
+            %% debug only: retry until there is something in the file
+            retry_file(File)
+    end.
+
+retry_file(File) ->
+    case file:consult(File) of
+        {ok, [_|_] = Auths} ->
+            maps:from_list(Auths);
+        _ ->
+            receive after 10 -> retry_file(File) end
     end.
 
 resolve_epmd([], _Family, Acc) ->

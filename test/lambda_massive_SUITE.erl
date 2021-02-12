@@ -36,6 +36,19 @@ all() ->
 %%--------------------------------------------------------------------
 %% Convenience & data
 
+-define (SIMPLE_NODE_NAMES, true).
+-ifdef (SIMPLE_NODE_NAMES).
+node_name(Seq, Auth) ->
+    {ok, Host} = inet:gethostname(),
+    Node = list_to_atom(lists:flatten(
+        io_lib:format("~s-~b@~s", [if Auth -> "authority"; true -> "lambda" end, Seq, Host]))),
+    {Node, false}.
+-else.
+node_name(_Seq, _Auth) ->
+    {peer:random_name(), true}.
+-endif.
+
+
 create_release(Priv) ->
     %% write release spec, *.rel file
     Base = filename:join(Priv, "lambda"),
@@ -56,13 +69,7 @@ start_tier(Boot, Count, AuthorityCount, ServiceLocator) when Count >= AuthorityC
             CommonArgs = ["+S", "2:2", "-connect_all", "false"],
             Extras = if Auth -> ["-lambda", "authority", "true"]; true -> [] end,
             ExtraArgs = ["-lambda", "bootspec", "[{file,\"" ++ ServiceLocator ++ "\"}]" | Extras] ++ CommonArgs,
-            Node = peer:random_name(),
-            Long = true,
-            %% for easier debugging, uncomment following 3 lines:
-            %%Long = false,
-            %%{ok, Host} = inet:gethostname(),
-            %%Node = list_to_atom(lists:flatten(
-            %%    io_lib:format("~s-~b@~s", [if Auth -> "authority"; true -> "lambda" end, Seq, Host]))),
+            {Node, Long} = node_name(Seq, Auth),
             {ok, Peer} = peer:start_link(#{node => Node, longnames => Long,
                 args => ["-boot", Boot | ExtraArgs], connection => standard_io}),
             %% add code path to the test directory for helper functions in lambda_test
@@ -142,8 +149,10 @@ reconnect(Config) when is_list(Config) ->
     Victim = lists:nth(4, Peers),
     Auths = lists:sort([A1, A2]),
     %% wait for expected connections
+    ct:pal("Attempting first connection"),
     ?assertEqual(ok, peer:apply(Victim, lambda_bootstrap, discover, [])),
     ?assertEqual(ok, peer:apply(Victim, lambda_test, wait_connection, [Auths])),
+    ct:pal("First connection successful~n"),
     %% force disconnect last node from first 2
     ?assertEqual(Auths, lists:sort(peer:apply(Victim, erlang, nodes, []))),
     true = peer:apply(Victim, net_kernel, disconnect, [A1]),
@@ -153,6 +162,7 @@ reconnect(Config) when is_list(Config) ->
     %% force bootstrap
     ?assertEqual(ok, peer:apply(Victim, lambda_bootstrap, discover, [])),
     %% must be connected again
+    ct:pal("Moment of truth~n"),
     ?assertEqual(ok, peer:apply(Victim, lambda_test, wait_connection, [Auths])),
     stop_tier(AllPeers).
 
