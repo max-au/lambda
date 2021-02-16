@@ -142,19 +142,21 @@ resolve({file, File}) ->
                     file:close(Fd),
                     #{Self => SelfAddr};
                 {error, eexist} ->
-                    retry_file(File)
+                    retry_file(File, 10000) %% infinity, for test purposes
             end;
         false ->
-            %% debug only: retry until there is something in the file
-            retry_file(File)
+            %% debug only: broker should not retry for too long
+            retry_file(File, 20)
     end.
 
-retry_file(File) ->
+retry_file(_File, 0) ->
+    #{};
+retry_file(File, Retry) ->
     case file:consult(File) of
         {ok, [_|_] = Auths} ->
             maps:from_list(Auths);
         _ ->
-            receive after 10 -> retry_file(File) end
+            receive after 50 -> retry_file(File, Retry - 1) end
     end.
 
 resolve_epmd([], _Family, Acc) ->
