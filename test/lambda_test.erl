@@ -10,13 +10,12 @@
     sync_via/2,
     start_local/0,
     end_local/0,
-    start_node_link/1,
-    start_node_link/3,
-    start_nodes/2
-]).
-
-%% Internal exports to spawn remotely
--export([
+    create_release/1,
+    logger_config/1,
+    filter_module/2,
+    start_node_link/2,
+    start_node_link/4,
+    start_nodes/3,
     wait_connection/1
 ]).
 
@@ -77,66 +76,113 @@ start_local() ->
 end_local() ->
     ok = application:stop(lambda),
     ok = application:unload(lambda),
-    %% don't care about compiler
+    %% don't care about compiler app left running
     lists:prefix(?MODULE_STRING, atom_to_list(node())) andalso net_kernel:stop(),
     ok.
 
+%% @doc Creates a boot script simulating OTP release. Recommended to use
+%%      with start_node_link or start_nodes. Returns boot script location.
+-spec create_release(file:filename_all()) -> file:filename_all().
+create_release(Priv) ->
+    _ = application:load(lambda),
+    _ = application:load(sasl),
+    %% write release spec, *.rel file
+    Base = filename:join(Priv, "lambda"),
+    Apps = [begin {ok, Vsn} = application:get_key(App, vsn), {App, Vsn} end ||
+        App <- [kernel, stdlib, compiler, sasl, lambda]],
+    RelSpec = {release, {"lambda", "1.0.0"}, {erts, erlang:system_info(version)}, Apps},
+    AppSpec = io_lib:fwrite("~p. ", [RelSpec]),
+    ok = file:write_file(Base ++ ".rel", lists:flatten(AppSpec)),
+    %% don't expect any warnings, fail otherwise
+    {ok, systools_make, []} = systools:make_script(Base, [silent, {outdir, Priv}, local]),
+    Base.
+
+%% @doc Helper to create command line that redirects specific logger events to stderr
+%%      Convenient for debugging: add this to start_node_link command line.
+%%      When non-empty list of modules provided, only these modules are allowed in the output.
+%%      By default, only lambda domain messages are printed
+-spec logger_config([module()]) -> [string()].
+logger_config(Modules) ->
+    Formatter = {logger_formatter,
+        #{legacy_header => false, single_line => true,
+            template => [time, " ", node, " ", pid, " ", mfa, ":", line, " ", msg, "\n"]}
+    },
+    Filters = [{module, {fun ?MODULE:filter_module/2, Modules}}],
+    LogCfg = [
+        {handler, default, logger_std_h,
+            #{config => #{type => standard_error}, filters => Filters, formatter => Formatter}}],
+    ["-kernel", "logger", lists:flatten(io_lib:format("~10000tp", [LogCfg])), "-kernel", "logger_level", "all"].
+
+%% @doc Filter passing events only from a list of allowed modules, and only for lambda domain
+-spec filter_module(LogEvent, Modules) -> logger:filter_return() when
+    LogEvent :: logger:log_event(),
+    Modules :: [module()].
+filter_module(#{meta := Meta} = LogEvent, Modules) when is_list(Modules) ->
+    case lists:member(lambda, maps:get(domain, Meta, [])) andalso
+        (Modules =:= [] orelse lists:member(element(1, maps:get(mfa, Meta, {[]})), Modules)) of
+        true ->
+            LogEvent#{meta => Meta#{node => node()}};
+        false ->
+            stop
+    end.
+
 %% @doc Starts an extra node with specified bootstrap, no authority and default command line.
--spec start_node_link(lambda_broker:points()) -> {peer:dest(), node()}.
-start_node_link(Bootstrap) ->
-    start_node_link(Bootstrap, [], false).
+-spec start_node_link(file:filename_all(), lambda_broker:points()) -> {peer:dest(), node()}.
+start_node_link(Boot, Bootstrap) ->
+    start_node_link(Boot, Bootstrap, [], false).
 
 %% @doc Starts an extra node with specified bootstrap, authority setting, and additional
 %%      arguments in the command line.
--spec start_node_link(lambda_broker:points(), CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
-start_node_link(Bootstrap, CmdLine, Authority) ->
+-spec start_node_link(file:filename_all(), [lambda_bootstrap:bootspec()], CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
+start_node_link(Boot, Bootspec, CmdLine, Authority) ->
     Node = peer:random_name(),
-    CP = code:lib_dir(lambda, ebin),
     TestCP = filename:dirname(code:which(?MODULE)),
     Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
-    Boot = if Bootstrap =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("[{static, ~10000tp}]", [Bootstrap]))]; true -> [] end,
+    ExtraArgs = if Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))]; true -> [] end,
     {ok, Peer} = peer:start_link(#{node => Node, connection => standard_io,
         args => [
-            %% "-kernel", "dist_auto_connect", "never",
+            "-boot", Boot,
+            "-connect_all", "false",
             "-start_epmd", "false",
             "-epmd_module", "lambda_discovery",
-            %"-kernel", "logger", "[{handler, default, logger_std_h,#{config => #{type => standard_error}, formatter => {logger_formatter, #{ }}}}]",
-            %"-kernel", "logger_level", "all",
-            "-pa", CP, "-pa", TestCP] ++ Auth ++ Boot ++ CmdLine}),
-    {ok, _Apps} = peer:apply(Peer, application, ensure_all_started, [lambda]),
-    is_map(Bootstrap) andalso
-        begin
-            {_, BootNodes} = lists:unzip(maps:keys(Bootstrap)),
-            ok = peer:apply(Peer, ?MODULE, wait_connection, [BootNodes])
-        end,
+            "-pa", TestCP] ++ Auth ++ ExtraArgs ++ CmdLine}),
+    %% wait for connection?
+    case Bootspec of
+        [{static, Map}] when is_map(Map) ->
+            {_, BootNodes} = lists:unzip(maps:keys(Map)),
+            ok = peer:apply(Peer, ?MODULE, wait_connection, [BootNodes]);
+        _ ->
+            ok
+    end,
     {Peer, Node}.
 
 %% @doc Starts multiple lambda non-authority nodes concurrently.
--spec start_nodes(lambda_broker:points(), pos_integer()) -> [{peer:dest(), node()}].
-start_nodes(Bootstrap, Count) ->
+-spec start_nodes(file:filename_all(), [lambda_bootstrap:bootspec()], pos_integer()) -> [{peer:dest(), node()}].
+start_nodes(Boot, BootSpec, Count) ->
     lambda_async:pmap([
-        fun () -> {Peer, Node} = start_node_link(Bootstrap, [], false), unlink(Peer), {Peer, Node} end
+        fun () -> {Peer, Node} = start_node_link(Boot, BootSpec, [], false), unlink(Peer), {Peer, Node} end
         || _ <- lists:seq(1, Count)]).
 
-%% @private
-%% executed in the remote node: waits until broker finds some
-%%  authority
--spec wait_connection([node()]) -> ok.
+%% @doc
+%% executed in the remote node: waits until node is connected to a list of other nodes passed
+-spec wait_connection([node()]) -> ok | {error, [node()]}.
 wait_connection(Nodes) ->
     net_kernel:monitor_nodes(true),
-    wait_nodes(Nodes),
+    wait_nodes(Nodes, 4000), %% keep barrier shorter than gen_server:call timeout
     net_kernel:monitor_nodes(false).
 
-wait_nodes([]) ->
+wait_nodes([], _Barrier) ->
     ok;
-wait_nodes([Node | Nodes]) ->
+wait_nodes([Node | Nodes], Barrier) ->
     %% subscribe to all nodeup events and wait...
     case lists:member(Node, [node() | nodes()]) of
         true ->
-            wait_nodes(lists:delete(Node, Nodes));
+            wait_nodes(lists:delete(Node, Nodes), Barrier);
         false ->
             receive
-                {nodeup, Node} ->
-                    wait_nodes(lists:delete(Node, Nodes))
+                {nodeup, Node1} ->
+                    wait_nodes(lists:delete(Node1, Nodes), Barrier)
+            after Barrier ->
+                {error, [Node | Nodes]}
             end
     end.

@@ -37,7 +37,8 @@ init_per_group(local, Config) ->
     unlink(Disco),
     [{disco, Disco} | Config];
 init_per_group(_Group, Config) ->
-    Config.
+    Boot = lambda_test:create_release(proplists:get_value(priv_dir, Config)),
+    [{boot, Boot} | Config].
 
 end_per_group(local, Config) ->
     gen_server:stop(proplists:get_value(disco, Config)),
@@ -129,26 +130,27 @@ peer(Config) when is_list(Config) ->
     %% do not use the test runner node for any logic, for
     %%  the sake of isolation and "leave no trace" idea
     %% start first authority node, as we need to make a bootstrap of it
-    {AuthorityPeer, AuthorityNode} = lambda_test:start_node_link(undefined, [], true),
+    Boot = proplists:get_value(boot, Config),
+    {AuthorityPeer, AuthorityNode} = lambda_test:start_node_link(Boot, undefined, [], true),
     %% form the bootstrap
     Addr = peer:apply(AuthorityPeer, lambda_discovery, get_node, []),
-    Bootstrap = #{{lambda_authority, AuthorityNode} => Addr},
+    BootSpec = [{static, #{{lambda_authority, AuthorityNode} => Addr}}],
     %% start extra nodes
-    Peers = lambda_test:start_nodes(Bootstrap, 4),
+    Peers = lambda_test:start_nodes(Boot, BootSpec, 4),
     {Peers1, ExpectedWorkers} = lists:unzip(Peers),
     %% ensure they all find the authority
     WorkerNodes = peer:apply(AuthorityPeer, erlang, nodes, []),
     ?assertEqual([], ExpectedWorkers -- WorkerNodes, "missing initial nodes"),
     ?assertEqual([], WorkerNodes -- ExpectedWorkers, "unexpected initial nodes"),
     %% start more nodes, don't give them authority addresses
-    NonAuth = lambda_test:start_nodes(Bootstrap, 4),
+    NonAuth = lambda_test:start_nodes(Boot, BootSpec, 4),
     {Peers2, NonAuthWN} = lists:unzip(NonAuth),
     %% verify there are 8 nodes connected to this authority
     AllWorkerNodes = peer:apply(AuthorityPeer, erlang, nodes, []),
     ?assertEqual([], (ExpectedWorkers ++ NonAuthWN) -- AllWorkerNodes, "missing extra nodes"),
     ?assertEqual([], (AllWorkerNodes -- ExpectedWorkers) -- NonAuthWN, "unexpected extra nodes"),
     %% start a second authority
-    {SecondAuthPeer, SecondAuthNode} = lambda_test:start_node_link(Bootstrap, [], true),
+    {SecondAuthPeer, SecondAuthNode} = lambda_test:start_node_link(Boot, BootSpec, [], true),
     %% flush all queues from all nodes
     timer:sleep(2000),
     %% verify both authorities have 9 connected nodes (8 non-authority)

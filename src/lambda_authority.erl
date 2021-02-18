@@ -98,13 +98,6 @@ peers(Authority, Peers) ->
 
 -type state() :: #lambda_authority_state{}.
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: authority " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 -spec init([]) -> {ok, state()}.
 init([]) ->
     {ok, #lambda_authority_state{authorities = #{self() => lambda_discovery:get_node()}}}.
@@ -120,13 +113,13 @@ handle_cast(_Req, _State) ->
 
 %% bootstrap: try to discover not yet known Peers
 handle_info({peers, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
-    ?dbg("NEW PEERS ~200p", [maps:without(maps:keys(Auth), Peers)]),
+    ?LOG_DEBUG("NEW PEERS ~200p", [maps:without(maps:keys(Auth), Peers)], #{domain => [lambda]}),
     discover(Auth, Peers),
     {noreply, State};
 
 %% syn: initiator is discovering us, sending a list of Peers known to it
 handle_info({syn, Initiator, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
-    ?dbg("SYN from ~p ~200p (brokers ~200p)", [Initiator, Peers, maps:keys(State#lambda_authority_state.brokers)]),
+    ?LOG_DEBUG("SYN from ~p ~200p (brokers ~200p)", [Initiator, Peers, maps:keys(State#lambda_authority_state.brokers)], #{domain => [lambda]}),
     %% remember initiator
     _MRef = monitor(process, Initiator),
     Contact = maps:get(Initiator, Peers),
@@ -144,11 +137,11 @@ handle_info({syn, Initiator, Peers}, #lambda_authority_state{authorities = Auth}
 handle_info({ack, Origin, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
     case is_map_key(Origin, Auth) orelse Origin =:= self() of
         true ->
-            ?dbg("PEER KNOWN ~p", [if Origin =:= self() -> "self"; true -> Origin end]),
+            ?LOG_DEBUG("PEER KNOWN ~p", [if Origin =:= self() -> "self"; true -> Origin end], #{domain => [lambda]}),
             {noreply, State};
         false ->
             %% new peer authority
-            ?dbg("ACK ~p (known ~200p)", [Origin, Peers]),
+            ?LOG_DEBUG("ACK ~p (known ~200p)", [Origin, Peers], #{domain => [lambda]}),
             _MRef = monitor(process, Origin),
             Contact = maps:get(Origin, Peers),
             %% notify known brokers about new Authority
@@ -159,7 +152,7 @@ handle_info({ack, Origin, Peers}, #lambda_authority_state{authorities = Auth} = 
 
 %% authority discovered by a Broker
 handle_info({discover, Broker, Addr}, #lambda_authority_state{authorities = Auth, brokers = Brokers} = State) ->
-    ?dbg("BROKER from ~s (~200p) ~200p", [node(Broker), Broker, Addr]),
+    ?LOG_DEBUG("BROKER from ~s (~200p) ~200p", [node(Broker), Broker, Addr], #{domain => [lambda]}),
     Self = maps:get(self(), Auth),
     _MRef = monitor(process, Broker),
     %% send self, and a list of other authorities to discover
@@ -177,7 +170,7 @@ handle_info({exchange, Module, Broker}, #lambda_authority_state{} = State) ->
 
 %% broker cancels a subscription for module exchange
 handle_info({cancel, _Module, _Broker}, #lambda_authority_state{exchanges = Exchanges} = State) ->
-    ?dbg("cancel ~s subscription for ~s (~200p)", [_Module, node(_Broker), _Broker]),
+    ?LOG_DEBUG("cancel ~s subscription for ~s (~200p)", [_Module, node(_Broker), _Broker], #{domain => [lambda]}),
     %% send self, and a list of other authorities to discover
     {noreply, State#lambda_authority_state{exchanges = Exchanges}};
 

@@ -1,5 +1,5 @@
 %% @doc
-%%  Lambda application module.
+%%  Lambda application callback module.
 %% @end
 -module(lambda_app).
 -author("maximfca@gmail.com").
@@ -11,8 +11,10 @@
 
 -behaviour(application).
 
-start(_StartType, _StartArgs) ->
+-spec start(normal, []) -> supervisor:startlink_ret().
+start(normal, []) ->
     lambda_sup:start_link().
 
-stop(_State) ->
+-spec stop(undefined) -> ok.
+stop(undefined) ->
     ok.

@@ -65,13 +65,6 @@ start_link(Broker, Module, Options) ->
     broker :: lambda:dst()
 }).
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: listener " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 init([Broker, Module, #{capacity := Capacity}]) ->
     %% monitor broker and sell some capacity
     _ = lambda_broker:sell(Broker, Module, Capacity, #{module => module_meta(Module)}),
@@ -91,18 +84,18 @@ handle_cast(_Request, _State) ->
 
 handle_info({'EXIT', Pid, _Reason}, #lambda_listener_state{module = Module, capacity = Capacity, conns = Conns, broker = Broker} = State) ->
     %% update outstanding "sell" order
-    ?dbg("client ~p disconnected", [Pid]),
+    ?LOG_DEBUG("client ~p disconnected", [Pid], #{domain => [lambda]}),
     {Cap, NewConns} = maps:take(Pid, Conns),
     NewCap = Capacity + Cap,
     lambda_broker:sell(Broker, Module, NewCap),
     {noreply, State#lambda_listener_state{capacity = NewCap, conns = NewConns}};
 
 handle_info({connect, To, _Cap}, #lambda_listener_state{capacity = 0} = State) ->
-    ?dbg("client ~p wants ~b (nothing left)", [To, _Cap]),
+    ?LOG_DEBUG("client ~p wants ~b (nothing left)", [To, _Cap], #{domain => [lambda]}),
     To ! {error, no_capacity},
     {noreply, State};
 handle_info({connect, To, Cap}, #lambda_listener_state{module = Module, conns = Conns, capacity = Capacity, broker = Broker} = State) ->
-    ?dbg("client ~p wants ~b (~b left)", [To, Cap, Capacity]),
+    ?LOG_DEBUG("client ~p wants ~b (~b left)", [To, Cap, Capacity], #{domain => [lambda]}),
     Allowed = min(Cap, Capacity),
     %% act as a supervisor here, starting child processes (connection handlers)
     {ok, Conn} = lambda_channel:start_link(To, Allowed),

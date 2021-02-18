@@ -157,20 +157,13 @@ meta(Srv) ->
 
 -type state() :: #lambda_plb_state{}.
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: plb " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 -spec init({lambda:dst(), Module :: atom(), Options :: options()}) -> {ok, state()}.
 init({Broker, Module, #{capacity := HW} = Options}) ->
     %% initial array contains a single zero element with zero weight
     put(0, 0),
     %% monitor the broker (and reconnect if it restarts)
     erlang:monitor(process, Broker),
-    ?dbg("requesting ~b ~s from ~p", [HW, Module, Broker]),
+    ?LOG_DEBUG("requesting ~b ~s from ~p", [HW, Module, Broker], #{domain => [lambda]}),
     %% not planning to cancel the order
     _ = lambda_broker:buy(Broker, Module, HW, #{version => any}),
     {ok, #lambda_plb_state{module = Module,
@@ -180,13 +173,13 @@ init({Broker, Module, #{capacity := HW} = Options}) ->
         high = HW}}.
 
 handle_call(token, _From, #lambda_plb_state{capacity = 0, queue = Queue} = State) ->
-    % ?LOG_DEBUG("~p: no capacity: sending to queue ~p", [_From, Queue]),
+    % ?LOG_DEBUG("~p: no capacity: sending to queue ~p", [_From, Queue], #{domain => [lambda]}),
     {reply, {suspend, Queue}, State};
 handle_call(token, _From, #lambda_plb_state{capacity = Cap, index_to_pid = Itp} = State) ->
     Idx = take(rand:uniform(Cap) - 1, tuple_size(Itp)),
     To = element(Idx + 1, Itp),
     Cap =:= 1 andalso begin State#lambda_plb_state.queue ! block end,
-    % ?LOG_DEBUG("~p: giving token ~p", [_From, To]),
+    % ?LOG_DEBUG("~p: giving token ~p", [_From, To], #{domain => [lambda]}),
     {reply, To, State#lambda_plb_state{capacity = Cap - 1}};
 
 handle_call(meta, From, #lambda_plb_state{meta = Waiting} = State) when is_list(Waiting) ->
@@ -208,7 +201,7 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
     %%
     ServerCount = tuple_size(Itp),
     %%
-    ?dbg("received demand (~b) from ~p", [Demand, Server]),
+    ?LOG_DEBUG("received demand (~b) from ~p", [Demand, Server], #{domain => [lambda]}),
     %% unblock the queue
     Cap =:= 0 andalso begin State#lambda_plb_state.queue ! unblock end,
     %%
@@ -246,13 +239,13 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
     end;
 
 handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Module, meta = Waiting} = State) when is_list(Waiting) ->
-    ?dbg("meta ~200p received for ~200p", [Meta, Waiting]),
+    ?LOG_DEBUG("meta ~200p received for ~200p", [Meta, Waiting], #{domain => [lambda]}),
     Module = compile_proxy(Module, Meta),
     [gen:reply(To, Meta) || To <- Waiting],
     handle_info({order, Servers}, State#lambda_plb_state{meta = maps:get(module, Meta)});
 handle_info({order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
-    ?dbg("found servers: ~200p", [Servers]),
+    ?LOG_DEBUG("found servers: ~200p", [Servers], #{domain => [lambda]}),
     Self = self(),
     [erlang:send(Pid, {connect, Self, Cap}, [nosuspend]) || {Pid, Cap, _Meta} <- Servers],
     {noreply, State};
@@ -274,18 +267,18 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_plb_state{pid_to_ind
 queue() ->
     receive
         unblock ->
-            % ?LOG_DEBUG("Queue unblocked", []),
+            % ?LOG_DEBUG("Queue unblocked", [], #{domain => [lambda]}),
             queue_open()
     end.
 
 queue_open() ->
     receive
         {'$gen_call', From, wait} ->
-            % ?LOG_DEBUG("Wait done for ~p", [From]),
+            % ?LOG_DEBUG("Wait done for ~p", [From], #{domain => [lambda]}),
             gen:reply(From, ok),
             queue_open();
         block ->
-            % ?LOG_DEBUG("Queue blocked", []),
+            % ?LOG_DEBUG("Queue blocked", [], #{domain => [lambda]}),
             queue()
     end.
 

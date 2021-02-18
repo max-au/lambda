@@ -67,13 +67,6 @@ discover() ->
 
 -type state() :: #lambda_bootstrap_state{}.
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: bootstrap " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 %% By default, attempt to resolve every 10 seconds
 -define (LAMBDA_BOOTSTRAP_INTERVAL, 10000).
 
@@ -97,7 +90,7 @@ handle_info(resolve, State) ->
 
 handle_resolve(#lambda_bootstrap_state{spec = Spec, subscribers = Subs} = State) ->
     New = resolve(Spec),
-    ?dbg("resolved for ~200p into ~200p", [Subs, New]),
+    ?LOG_DEBUG("resolved for ~200p into ~200p", [Subs, New], #{domain => [lambda]}),
     %% notify subscribers of changes
     %% TODO: think how to avoid bootstrapping over and over
     Diff = New, %% maps:without(maps:keys(Prev), New),
@@ -137,7 +130,7 @@ resolve({file, File}) ->
                 {ok, Fd} ->
                     SelfAddr = lambda_discovery:get_node(),
                     Self = {lambda_authority, node()},
-                    ?dbg("creating authority ~200p => ~200p", [Self, SelfAddr]),
+                    ?LOG_DEBUG("creating authority ~200p => ~200p", [Self, SelfAddr], #{domain => [lambda]}),
                     ok = file:write(Fd, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}]))),
                     file:close(Fd),
                     #{Self => SelfAddr};
@@ -174,7 +167,7 @@ resolve_epmd([Node | Tail], Family, Acc) ->
             %% node is not running, which isn't an error
             resolve_epmd(Tail, Family, Acc);
         Class:Reason:Stack ->
-            ?LOG_DEBUG("failed to resolve ~s, ~s:~p~n~200p", [Node, Class, Reason, Stack]),
+            ?LOG_DEBUG("failed to resolve ~s, ~s:~p~n~200p", [Node, Class, Reason, Stack], #{domain => [lambda]}),
             resolve_epmd(Tail, Family, Acc)
     end.
 

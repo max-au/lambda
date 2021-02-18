@@ -137,13 +137,6 @@ cancel(Srv, Proc) ->
 
 -type state() :: #lambda_broker_state{}.
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: broker " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 -spec init([]) -> {ok, state()}.
 init([]) ->
     Self = lambda_discovery:get_node(),
@@ -151,14 +144,14 @@ init([]) ->
 
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
-    ?dbg("reporting authorities ~200p", [maps:keys(Auth)]),
+    ?LOG_DEBUG("reporting authorities ~200p", [maps:keys(Auth)], #{domain => [lambda]}),
     {reply, maps:keys(Auth), State}.
 
 handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = Self, next_id = Id, exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
     when Type =:= buy; Type =:= sell ->
     case maps:find(Trader, Monitors) of
         {ok, {_Type, Module, _MRef}} ->
-            ?dbg("~s received updated quantity from ~p for ~s (~b)", [Type, Trader, Module, Quantity]),
+            ?LOG_DEBUG("~s received updated quantity from ~p for ~s (~b)", [Type, Trader, Module, Quantity], #{domain => [lambda]}),
             %% update outstanding sell order with new Quantity
             Outstanding = maps:get(Module, Orders),
             %% NewOrders = lists:keyreplace(Trader, 3, Orders, {Id, Type, Trader, Quantity, Ex}),
@@ -169,7 +162,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
             {noreply, State#lambda_broker_state{
                 orders = Orders#{Module => NewOut}}};
         error ->
-            ?dbg("~s ~b ~s for ~p (exchanges: ~p)", [Type, Quantity, Module, Trader, Exchanges]),
+            ?LOG_DEBUG("~s ~b ~s for ~p (exchanges: ~p)", [Type, Quantity, Module, Trader, Exchanges], #{domain => [lambda]}),
             %% monitor seller
             MRef = erlang:monitor(process, Trader),
             NewMons = Monitors#{Trader => {Type, Module, MRef}},
@@ -197,18 +190,18 @@ handle_cast({cancel, Trader}, State) ->
 
 handle_info({peers, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
     %% initial discovery
-    ?dbg("discovering authorities ~200p", [Peers]),
+    ?LOG_DEBUG("discovering authorities ~200p", [Peers], #{domain => [lambda]}),
     discover(Auth, Peers, Self),
     {noreply, State};
 
 handle_info({authority, NewAuth, _AuthAddr, _Peers}, #lambda_broker_state{authority = Auth} = State)
     when is_map_key(NewAuth, Auth) ->
-    ?dbg("duplicate authority ~s (from ~200p)", [node(NewAuth), _AuthAddr]),
+    ?LOG_DEBUG("duplicate authority ~s (from ~200p)", [node(NewAuth), _AuthAddr], #{domain => [lambda]}),
     {noreply, State};
 
 %% authority discovered
 handle_info({authority, Authority, AuthAddr, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
-    ?dbg("got authority ~s:~p (~200p)", [node(Authority), Authority, AuthAddr]),
+    ?LOG_DEBUG("got authority ~s:~p (~200p)", [node(Authority), Authority, AuthAddr], #{domain => [lambda]}),
     _MRef = erlang:monitor(process, Authority),
     %% new authority may know more exchanges for outstanding orders
     [subscribe_exchange(#{Authority => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
@@ -224,7 +217,7 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
     %% send updates for outstanding orders to added exchanges
     NewExch = Exch -- Known,
     NewExch =/= [] andalso
-        ?dbg("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding]),
+        ?LOG_DEBUG("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding], #{domain => [lambda]}),
     [case Type of
          buy -> lambda_exchange:buy(Ex, Id, Quantity, Meta);
          sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, Meta)
@@ -240,7 +233,7 @@ handle_info({order, Id, Module, Sellers}, #lambda_broker_state{orders = Orders} 
             %% find the order
             case lists:keysearch(Id, 1, Outstanding) of
                 {value, {Id, buy, Buyer, Quantity, BuyMeta, Previous}} ->
-                    ?dbg("order reply: id ~b for ~p with ~200p", [Id, Buyer, Sellers]),
+                    ?LOG_DEBUG("order reply: id ~b for ~p with ~200p", [Id, Buyer, Sellers], #{domain => [lambda]}),
                     %% notify buyers if any order complete
                     case notify_buyer(Buyer, Quantity, Sellers, Previous, []) of
                         {QuantityLeft, AlreadyUsed} ->
@@ -254,12 +247,12 @@ handle_info({order, Id, Module, Sellers}, #lambda_broker_state{orders = Orders} 
                     end;
                 false ->
                     %% buy order was canceled while in-flight to exchange
-                    ?dbg("order reply: id ~b has no buyer", [Id]),
+                    ?LOG_DEBUG("order reply: id ~b has no buyer", [Id], #{domain => [lambda]}),
                     {noreply, State}
             end;
         error ->
             %% buy order was canceled while in-flight to exchange
-            ?dbg("order reply: id ~b has no module known for buyer", [Id]),
+            ?LOG_DEBUG("order reply: id ~b has no module known for buyer", [Id], #{domain => [lambda]}),
             {noreply, State}
     end;
 
@@ -269,10 +262,10 @@ handle_info({'DOWN', _Mref, process, Pid, _Reason}, #lambda_broker_state{authori
     %% it's very rare for an authority to go down, but it's also very fast to check
     case maps:take(Pid, Auth) of
         {_, NewAuth} ->
-            ?dbg("authority down: ~s ~p (~200p)", [node(Pid), Pid, _Reason]),
+            ?LOG_DEBUG("authority down: ~s ~p (~200p)", [node(Pid), Pid, _Reason], #{domain => [lambda]}),
             {noreply, State#lambda_broker_state{authority = NewAuth}};
         error ->
-            ?dbg("canceling (down) order from ~p (~200p)", [Pid, _Reason]),
+            ?LOG_DEBUG("canceling (down) order from ~p (~200p)", [Pid, _Reason], #{domain => [lambda]}),
             {noreply, cancel(Pid, false, State)}
     end;
 
@@ -301,7 +294,7 @@ discover(Existing, New, Self) ->
 cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors, exchanges = Exchanges} = State) ->
     case maps:take(Pid, Monitors) of
         {{exchange, Module, _MRef}, NewMonitors} ->
-            ?dbg("exchange ~p for ~s down, known: ~200p", [Pid, Module, maps:get(Module, Exchanges, error)]),
+            ?LOG_DEBUG("exchange ~p for ~s down, known: ~200p", [Pid, Module, maps:get(Module, Exchanges, error)], #{domain => [lambda]}),
             case maps:get(Module, Exchanges) of
                 [Pid] ->
                     State#lambda_broker_state{exchanges = maps:remove(Module, Exchanges), monitors = NewMonitors};
@@ -309,7 +302,7 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
                     State#lambda_broker_state{exchanges = Exchanges#{Module => lists:delete(Pid, Pids)}, monitors = NewMonitors}
             end;
         {{Type, Module, MRef}, NewMonitors} ->
-            ?dbg("cancel ~s order for ~s from ~p, orders: ~200p", [Type, Module, Pid, maps:get(Module, Orders)]),
+            ?LOG_DEBUG("cancel ~s order for ~s from ~p, orders: ~200p", [Type, Module, Pid, maps:get(Module, Orders)], #{domain => [lambda]}),
             %% demonitor if it's forced cancellation
             Demonitor andalso erlang:demonitor(MRef, [flush]),
             %% enumerate to find the order
@@ -338,7 +331,7 @@ broadcast(Authority, Msg) ->
 
 notify_buyer(Buyer, Quantity, [], Previous, Servers) ->
     %% partial, or fully duplicate?
-    ?dbg("buyer ~p notification: ~200p", [Buyer, Servers]),
+    ?LOG_DEBUG("buyer ~p notification: ~200p", [Buyer, Servers], #{domain => [lambda]}),
     connect_sellers(Buyer, Servers),
     {Quantity, Previous};
 notify_buyer(Buyer, Quantity, [{Seller, QSell, Meta} | Remaining], Previous, Servers) ->
@@ -348,7 +341,7 @@ notify_buyer(Buyer, Quantity, [{Seller, QSell, Meta} | Remaining], Previous, Ser
             notify_buyer(Buyer, Quantity, Remaining, Previous, Servers);
         false when Quantity =< QSell ->
             %% complete, in total
-            ?dbg("buyer ~p complete (~b) notification: ~200p", [Buyer, Quantity, [{Seller, QSell} | Servers]]),
+            ?LOG_DEBUG("buyer ~p complete (~b) notification: ~200p", [Buyer, Quantity, [{Seller, QSell} | Servers]], #{domain => [lambda]}),
             connect_sellers(Buyer, [{Seller, QSell, Meta} | Servers]),
             done;
         false ->

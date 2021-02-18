@@ -36,6 +36,7 @@
 -behaviour(gen_server).
 
 -include_lib("kernel/include/inet.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 %%--------------------------------------------------------------------
 %% Public API
@@ -170,13 +171,6 @@ address_please(Name, Host, AddressFamily) ->
 %%--------------------------------------------------------------------
 %% Server implementation
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: discovery " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 %% Discovery state: maps node names to addresses.
 %% Current limitation: a node can only have a single address,
 %%  either IPv4 or IPv6.
@@ -207,14 +201,14 @@ init([]) ->
     end.
 
 handle_call({set, Node, Address}, _From, State) ->
-    ?dbg("set ~s to ~200p", [Node, Address]),
+    ?LOG_DEBUG("set ~s to ~200p", [Node, Address], #{domain => [lambda]}),
     {reply, ok, State#{Node => Address}};
 
 handle_call({del, Node}, _From, State) ->
     {reply, ok, maps:remove(Node, State)};
 
 handle_call({get, Node}, _From, State) ->
-    ?dbg("asking for ~s (~200p)", [case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, State, error)]),
+    ?LOG_DEBUG("asking for ~s (~200p)", [case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, State, error)], #{domain => [lambda]}),
     {reply, maps:get(Node, State, error), State};
 
 handle_call({names, HostName}, _From, State) ->

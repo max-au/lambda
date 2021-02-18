@@ -72,13 +72,6 @@ start_link(Module, Capacity) ->
     total = 0 :: non_neg_integer()
 }).
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: channel " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 init([To, Capacity]) ->
     erlang:monitor(process, To),
     demand(To, Capacity),
@@ -97,16 +90,16 @@ handle_cast(_Request, _State) ->
     erlang:error(notsup).
 
 handle_info({started, Worker}, #lambda_channel_state{in_flight = InFlight} = State) ->
-    ?dbg("worker ~p started", [Worker]),
+    ?LOG_DEBUG("worker ~p started", [Worker], #{domain => [lambda]}),
     erlang:monitor(process, Worker),
     {noreply, State#lambda_channel_state{in_flight = InFlight + 1}};
 
 handle_info({'DOWN', _MRef, process, Client, _Reason}, #lambda_channel_state{to = Client} = State) ->
-    ?dbg("client ~p disconnected, ~200p", [Client, _Reason]),
+    ?LOG_DEBUG("client ~p disconnected, ~200p", [Client, _Reason], #{domain => [lambda]}),
     {stop, normal, State};
 
 handle_info({'DOWN', _MRef, process, _Worker, _Reason}, #lambda_channel_state{in_flight = InFlight, total = Total} = State) ->
-    ?dbg("worker ~p terminated, ~200p", [_Worker, _Reason]),
+    ?LOG_DEBUG("worker ~p terminated, ~200p", [_Worker, _Reason], #{domain => [lambda]}),
     {noreply, State#lambda_channel_state{in_flight = InFlight - 1, total = Total + 1, tokens = maybe_demand(State)}}.
 
 %%--------------------------------------------------------------------
@@ -119,7 +112,7 @@ maybe_demand(#lambda_channel_state{tokens = Tokens}) ->
     Tokens - 1.
 
 demand(Client, Demand) ->
-    ?dbg("demanding: ~b from ~p", [Demand, Client]),
+    ?LOG_DEBUG("demanding: ~b from ~p", [Demand, Client], #{domain => [lambda]}),
     Client ! {demand, Demand, self()}.
 
 %%--------------------------------------------------------------------
@@ -127,13 +120,13 @@ demand(Client, Demand) ->
 
 handle(Sap, M, F, A) ->
     Sap ! {started, self()},
-    ?dbg("handling call: ~s:~s(~w)", [M, F, A]),
+    ?LOG_DEBUG("handling call: ~s:~s(~w)", [M, F, A], #{domain => [lambda]}),
     erlang:apply(M, F, A).
 
 %%--------------------------------------------------------------------
 %% proxy to start requests without OTP 23 remote_spawn feature
 handle_erpc(ReplyTo, M, F, A) ->
-    ?dbg("handling job: ~s:~s(~w)", [M, F, A]),
+    ?LOG_DEBUG("handling job: ~s:~s(~w)", [M, F, A], #{domain => [lambda]}),
     try
         Res = erlang:apply(M, F, A),
         gen:reply(ReplyTo, {response, Res})

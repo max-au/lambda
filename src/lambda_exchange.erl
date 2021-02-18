@@ -105,13 +105,6 @@ cancel(Exchange, Type, Id) ->
     buy = [] :: [buy_order()]
 }).
 
-%% -define(DEBUG, true).
--ifdef (DEBUG).
--define (dbg(Fmt, Arg), io:format(standard_error, "~s ~p: exchange " ++ Fmt ++ "~n", [node(), self() | Arg])).
--else.
--define (dbg(Fmt, Arg), ok).
--endif.
-
 -type state() :: #lambda_exchange_state{}.
 
 -spec init([module()]) -> {ok, state()}.
@@ -129,12 +122,12 @@ handle_info({buy, Id, Quantity, Broker, Meta}, #lambda_exchange_state{module = M
     %% shortcut if there is anything for sale - to avoid monitoring new buyer
     case match(Broker, Module, Id, Quantity, Sell) of
         {NewSell, 0} ->
-            ?dbg("got buy order from ~p for ~b (id ~b, immediately completed)", [Broker, Quantity, Id]),
+            ?LOG_DEBUG("got buy order from ~p for ~b (id ~b, immediately completed)", [Broker, Quantity, Id], #{domain => [lambda]}),
             %% completed at full, nothing to monitor or remember
             {noreply, match_buy(State#lambda_exchange_state{sell = NewSell})};
         {NewSell, Remaining} ->
             %% out of capacity, put buy order in the queue
-            ?dbg("got buy order from ~p for ~b (id ~b)", [Broker, Quantity, Id]),
+            ?LOG_DEBUG("got buy order from ~p for ~b (id ~b)", [Broker, Quantity, Id], #{domain => [lambda]}),
             MRef = erlang:monitor(process, Broker),
             {noreply, match_buy(State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining, Meta} | Buy], sell = NewSell})}
     end;
@@ -143,33 +136,33 @@ handle_info({sell, SellerContact, _Id, Quantity, Broker, Meta}, #lambda_exchange
     Order =
         case maps:find(Broker, Sell) of
             {ok, {_OldQ, MRef, SellerContact, OldMeta}} ->
-                ?dbg("sell capacity update from ~p for ~b (id ~b)", [Broker, Quantity, _Id]),
+                ?LOG_DEBUG("sell capacity update from ~p for ~b (id ~b)", [Broker, Quantity, _Id], #{domain => [lambda]}),
                 {Quantity, MRef, SellerContact, OldMeta};
             error ->
-                ?dbg("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, _Id, SellerContact]),
+                ?LOG_DEBUG("got sell order from ~p for ~b (id ~b, contact ~200p)", [Broker, Quantity, _Id, SellerContact], #{domain => [lambda]}),
                 MRef = erlang:monitor(process, Broker),
                 {Quantity, MRef, SellerContact, Meta}
         end,
     {noreply, match_buy(State#lambda_exchange_state{sell = Sell#{Broker => Order}})};
 
 handle_info({cancel, buy, Id, _Broker}, #lambda_exchange_state{buy = Buy} = State) ->
-    ?dbg("canceling buy order ~b from ~p", [Id, _Broker]),
+    ?LOG_DEBUG("canceling buy order ~b from ~p", [Id, _Broker], #{domain => [lambda]}),
     NewBuy = lists:keydelete(Id, 4, Buy),
     %% TODO: demonitor broker that has no orders left
     {noreply, State#lambda_exchange_state{buy = NewBuy}};
 
 handle_info({cancel, sell, _Id, Broker}, #lambda_exchange_state{sell = Sell} = State) ->
-    ?dbg("canceling sell order ~b from ~p", [_Id, Broker]),
+    ?LOG_DEBUG("canceling sell order ~b from ~p", [_Id, Broker], #{domain => [lambda]}),
     %% update remaining sellers map
     NewSell = maps:remove(Broker, Sell),
     %% TODO: demonitor broker that has no orders left
     {noreply, State#lambda_exchange_state{sell = NewSell}};
 
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_exchange_state{sell = Sell, buy = Buy} = State) ->
-    ?dbg("detected broker down ~p (reason ~200p)", [Pid, _Reason]),
+    ?LOG_DEBUG("detected broker down ~p (reason ~200p)", [Pid, _Reason], #{domain => [lambda]}),
     %% filter all buy orders. Can be slow, but this is a resource constrained situation already
     NewBuy = [{Pid1, MRef, Id, Quantity, Meta} || {Pid1, MRef, Id, Quantity, Meta} <- Buy, Pid =/= Pid1],
-    ?dbg("removed: ~200p ~200p", [Buy -- NewBuy, maps:get(Pid, Sell, [])]),
+    ?LOG_DEBUG("removed: ~200p ~200p", [Buy -- NewBuy, maps:get(Pid, Sell, [])], #{domain => [lambda]}),
     {noreply, State#lambda_exchange_state{buy = NewBuy, sell = maps:remove(Pid, Sell)}}.
 
 %%--------------------------------------------------------------------
@@ -226,5 +219,5 @@ select({Broker, {Q, _MRef, Contact, Meta}, Next}, Remain, Selected) ->
 
 complete_order(To, Module, Id, Sellers) ->
     NoBroker = [{Contact, Quantity, Meta} || {_, Contact, Quantity, Meta} <- Sellers],
-    ?dbg("responding to buyer's broker ~p for ~s (id ~b, sellers ~200P)", [To, Module, Id, NoBroker, 10]),
+    ?LOG_DEBUG("responding to buyer's broker ~p for ~s (id ~b, sellers ~200P)", [To, Module, Id, NoBroker, 10], #{domain => [lambda]}),
     To ! {order, Id, Module, NoBroker}.

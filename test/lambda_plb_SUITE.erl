@@ -44,7 +44,8 @@ all() ->
 
 init_per_suite(Config) ->
     ok = lambda_test:start_local(),
-    Config.
+    Boot = lambda_test:create_release(proplists:get_value(priv_dir, Config)),
+    [{boot, Boot} | Config].
 
 end_per_suite(Config) ->
     lambda_test:end_local(),
@@ -93,9 +94,9 @@ multi_echo(Count) ->
     lambda_plb:call(?MODULE, echo, [[]], infinity),
     multi_echo(Count - 1).
 
-make_node(Args, Capacity) ->
-    Bootstrap = #{{lambda_authority, node()} => lambda_discovery:get_node()},
-    {Peer, _Node} = lambda_test:start_node_link(Bootstrap, Args, false),
+make_node(Boot, Args, Capacity) ->
+    Bootstrap = [{static, #{{lambda_authority, node()} => lambda_discovery:get_node()}}],
+    {Peer, _Node} = lambda_test:start_node_link(Boot, Bootstrap, Args, false),
     {ok, Worker} = peer:apply(Peer, lambda, publish, [?MODULE, #{capacity => Capacity}]),
     unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
     {Peer, Worker}.
@@ -124,9 +125,10 @@ lb(Config) when is_list(Config) ->
     Precision = 3,
     ClientConcurrency = 100,
     ?assertEqual(0, SampleCount rem ClientConcurrency),
+    Boot = proplists:get_value(boot, Config),
     %% start worker nodes, when every next node has +1 more capacity
     WorkIds = lists:seq(1, WorkerCount),
-    Peers = lambda_async:pmap([{fun make_node/2, [["+S", integer_to_list(Seq)], Seq]}
+    Peers = lambda_async:pmap([{fun make_node/3, [Boot, ["+S", integer_to_list(Seq)], Seq]}
         || Seq <- WorkIds]),
     %% check peers scheduler counts
     WorkIds = lambda_async:pmap([{peer, apply, [P, erlang, system_info, [schedulers]]} || {P, _} <- Peers]),
@@ -240,13 +242,14 @@ throughput(Config) when is_list(Config) ->
     %% change the lb process priority to 'high', so it wins over any other processes
     Lb = proplists:get_value(lb, Config),
     Broker = proplists:get_value(broker, Config),
+    Boot = proplists:get_value(boot, Config),
     sys:replace_state(Lb, fun(S) -> erlang:process_flag(priority, high), S end),
     %% start servers
-    [measure(Lb, Broker, CapPerNode, Nodes) || CapPerNode <- [100, 200, 500, 1000], Nodes <- [1, 2, 4, 8, 32, 64, 128]].
+    [measure(Boot, Lb, Broker, CapPerNode, Nodes) || CapPerNode <- [100, 200, 500, 1000], Nodes <- [1, 2, 4, 8, 32, 64, 128]].
 
-measure(Lb, Broker, CapPerNode, Nodes) ->
+measure(Boot, Lb, Broker, CapPerNode, Nodes) ->
     %% remotely:
-    {Node, Peer, Worker, CapPerNode} = make_node([], CapPerNode),
+    {Node, Peer, Worker, CapPerNode} = make_node(Boot, [], CapPerNode),
     Workers = [begin {ok, W} = rpc:call(Node, lambda_listener, start, [?MODULE, CapPerNode]), W end
         || _ <- lists:seq(1, Nodes - 1)],
     %% ensure expected capacity achieved
