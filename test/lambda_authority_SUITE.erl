@@ -26,8 +26,8 @@
     command/1,
     next_state/3,
     %%
-    start_authority/2,
-    start_broker/2,
+    start_authority/3,
+    start_broker/3,
     connect/2,
     disconnect/2,
     check_state/0
@@ -52,12 +52,12 @@ all() ->
 %%--------------------------------------------------------------------
 %% Convenience & data
 
-start_tier(Boot, Count, AuthorityCount, ServiceLocator) when Count >= AuthorityCount ->
+start_tier(TestId, Boot, Count, AuthorityCount, ServiceLocator) when Count >= AuthorityCount ->
     %% start the nodes concurrently
     lambda_async:pmap([
         fun () ->
             Auth = Seq =< AuthorityCount,
-            {Peer, Node} = lambda_test:start_node_link(Boot, [{file, ServiceLocator}], ["+S", "2:2"], Auth),
+            {Peer, Node} = lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], Auth),
             unlink(Peer),
             {Peer, Node, Auth}
         end
@@ -66,9 +66,23 @@ start_tier(Boot, Count, AuthorityCount, ServiceLocator) when Count >= AuthorityC
 stop_tier(Peers) ->
     lambda_async:pmap([{peer, stop, [P]} || {P, _, _} <- Peers]).
 
+wait_brokers(BrokerPeers, AuthPeers, BrokerPids, AuthPids) ->
+    AuthViews = lambda_async:pmap([
+        {peer, apply, [P, lambda_authority, brokers, [lambda_authority]]} || P <- AuthPeers]),
+    BrokerViews = lambda_async:pmap([
+        {peer, apply, [P, lambda_broker, authorities, [lambda_broker]]} || P <- BrokerPeers]),
+    case lists:all(fun (V) -> lists:sort(V) =:= BrokerPids end, AuthViews) andalso
+         lists:all(fun (V) -> lists:sort(V) =:= AuthPids end, BrokerViews) of
+        true ->
+            ok;
+        false ->
+            wait_brokers(BrokerPeers, AuthPeers, BrokerPids, AuthPids)
+    end.
+
 verify_topo(Boot, ServiceLocator, TotalCount, AuthCount) ->
     %% start a tier, with several authorities
-    AllPeers = start_tier(Boot, TotalCount, AuthCount, ServiceLocator),
+    AllPeers = start_tier(integer_to_list(AuthCount) ++ "-" ++ integer_to_list(TotalCount),
+        Boot, TotalCount, AuthCount, ServiceLocator),
     %% Peers running Authority
     AuthPeers = [A || {A, _, true} <- AllPeers],
     {Peers, Nodes, _AuthBit} = lists:unzip3(AllPeers),
@@ -81,21 +95,14 @@ verify_topo(Boot, ServiceLocator, TotalCount, AuthCount) ->
     %% Find all broker pids on all nodes
     Brokers = lists:sort(lambda_async:pmap(
         [{peer, apply, [P, erlang, whereis, [lambda_broker]]} || P <- Peers])),
-    %% flush broker -authority -broker queues
-    lambda_async:pmap([{peer, apply, [P, sys, get_state, [lambda_broker]]} || P <- Peers]),
-    lambda_async:pmap([{peer, apply, [A, sys, get_state, [lambda_authority]]} || A <- AuthPeers]),
-    lambda_async:pmap([{peer, apply, [P, sys, get_state, [lambda_broker]]} || P <- Peers]),
-    %% ask every single broker - "who are your authorities"
-    BrokerKnownAuths = lambda_async:pmap([
-        {peer, apply, [P, lambda_broker, authorities, [lambda_broker]]} || P <- Peers]),
-    Views = lambda_async:pmap([{peer, apply, [P, lambda_authority, brokers, [lambda_authority]]}
-        || P <- AuthPeers]),
+    %% get auth pids
+    AuthPids = lists:sort(lambda_async:pmap([{peer, apply,
+        [P, erlang, whereis, [lambda_authority]]} || P <- AuthPeers])),
+    %% need to flush broker -authority -broker queues reliably, but without triggering any erlang message sends
+    %% anti-pattern: yes, use wait_until, as otherwise need a synchronous way to start the app/release
+    wait_brokers(Peers, AuthPeers, Brokers, AuthPids),
     %% stop everything
-    stop_tier(AllPeers),
-    %% ensure both authorities are here
-    [?assertEqual(AuthCount, length(A), {authorities, A}) || A <- BrokerKnownAuths],
-    %% ensure they have the same view of the world, except for themselves
-    [?assertEqual(Brokers, lists:sort(V), {view, V, Brokers}) || V <- Views].
+    stop_tier(AllPeers).
 
 %%--------------------------------------------------------------------
 %% Test Cases
@@ -110,7 +117,6 @@ basic(Config) when is_list(Config) ->
     %% run many combinations
     [
         begin
-            ct:pal("Running ~b nodes with ~b authorities~n", [Total, Auth]),
             ServiceLocator = filename:join(Priv,
                 lists:flatten(io_lib:format("service-~s~b_~b.loc", [?FUNCTION_NAME, Total, Auth]))),
             verify_topo(Boot, ServiceLocator, Total, Auth)
@@ -124,7 +130,7 @@ reconnect(Config) when is_list(Config) ->
     Boot = proplists:get_value(boot, Config),
     ServiceLocator = filename:join(Priv, "reconnect-service.loc"),
     %% start a tier, with several authorities
-    AllPeers = start_tier(Boot, 4, 2, ServiceLocator),
+    AllPeers = start_tier(reconnect, Boot, 4, 2, ServiceLocator),
     {Peers, [A1, A2 | _], _} = lists:unzip3(AllPeers),
     Victim = lists:nth(4, Peers),
     Auths = lists:sort([A1, A2]),
@@ -168,16 +174,18 @@ prop_self_healing(Boot, SL) ->
             {_History, State, Result} = proper_statem:run_commands(?MODULE, Cmds),
             %%%% cleanup
             cleanup(State),
-            Result =/= ok andalso io:format(standard_error, "FAIL: ~200p~n~200p~n~200p~n", [_History, State, Result]),
+            Result =/= ok andalso io:format(standard_error, "FAIL: ~200p~n", [lists:zip(Cmds, _History)]),
             Result =:= ok
         end
     ).
 
-start_authority(Boot, ServiceLocator) ->
-    lambda_test:start_node_link(Boot, [{file, ServiceLocator}], ["+S", "2:2"], true).
+start_authority(TestId, Boot, ServiceLocator) ->
+    lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], true).
+    %% use lambda_test:logger_config for reading extra nodes logger output
+    %% ++ lambda_test:logger_config([lambda_broker, lambda_bootstrap, lambda_authority]), true).
 
-start_broker(Boot, ServiceLocator) ->
-    lambda_test:start_node_link(Boot, [{file, ServiceLocator}], ["+S", "2:2"] ++ lambda_test:logger_config([lambda_broker, lambda_bootstrap]), false).
+start_broker(TestId, Boot, ServiceLocator) ->
+    lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], false).
 
 connect(Peer1, Node2) ->
     peer:apply(Peer1, net_kernel, connect_node, [Node2]).
@@ -193,6 +201,7 @@ check_state() ->
 -define (MAX_BROKERS, 16).
 
 -record(cluster_state, {
+    test_id :: integer(),
     boot :: file:filename_all(),
     service_locator :: file:filename_all(),
     auth = #{} :: #{lambda:dst() => node()},
@@ -203,16 +212,19 @@ cleanup(#cluster_state{auth = Auth, brokers = Brokers}) ->
     lambda_async:pmap([{peer, stop, [Pid]} || Pid <- maps:keys(Brokers) ++ maps:keys(Auth)]).
 
 initial_state(Boot, Priv) ->
-    Filename = lists:flatten(io_lib:format("srv-~b.loc", [erlang:system_time(millisecond)])),
-    #cluster_state{boot = Boot, service_locator = filename:join(Priv, Filename)}.
+    TestId = case erlang:get(test_id) of undefined -> 0; Id -> Id + 1 end,
+    erlang:put(test_id, TestId),
+    Filename = lists:flatten(io_lib:format("srv-~b.loc", [TestId])),
+    #cluster_state{test_id = TestId, boot = Boot, service_locator = filename:join(Priv, Filename)}.
 
 initial_state() ->
+    %% not used, initial state is supplied externally
     #cluster_state{}.
 
-precondition(#cluster_state{auth = Auth}, {call, ?MODULE, start_broker, [_, _]}) ->
+precondition(#cluster_state{auth = Auth}, {call, ?MODULE, start_broker, [_, _, _]}) ->
     map_size(Auth) < ?MAX_AUTHORITY;
 
-precondition(#cluster_state{brokers = Brokers}, {call, ?MODULE, start_authority, [_, _]}) ->
+precondition(#cluster_state{brokers = Brokers}, {call, ?MODULE, start_authority, [_, _, _]}) ->
     map_size(Brokers) < ?MAX_BROKERS;
 
 precondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, peer, stop, [Pid]}) ->
@@ -247,7 +259,7 @@ postcondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, ?MODULE, ch
             MustBeAuths = lambda_async:pmap([{peer, apply, [B, erlang, nodes, []]} || B <- maps:keys(Brokers)]),
             Res = lists:all(fun (MaybeAuths) -> lists:sort(MaybeAuths) =:= Auths end, MustBeAuths),
             FromAuth = if Auth =/= #{} -> peer:apply(hd(maps:keys(Auth)), erlang, nodes, []); true -> [] end,
-            Res orelse io:format(standard_error, "Actual: ~200p while expecting ~200p (auth has ~200p and ~200p)~n", [MustBeAuths, Auths, FromAuth, Nodes]),
+            Res orelse io:format(standard_error, "Actual: ~200p while expecting ~200p~nAuth knows ~200p and should know ~200p~n", [MustBeAuths, Auths, FromAuth, Nodes]),
             Res;
         _NotOk ->
             [
@@ -264,10 +276,10 @@ postcondition(_State, _Cmd, _Res) ->
 %%  * start/stop an authority/broker
 %%  * net splits/recovers
 %% * topology verification
-command(#cluster_state{auth = Auth, brokers = Brokers, boot = Boot, service_locator = SL}) ->
+command(#cluster_state{test_id = TestId, auth = Auth, brokers = Brokers, boot = Boot, service_locator = SL}) ->
     %% nodes starting (authority/broker)
-    AuthorityStart = {1, {call, ?MODULE, start_authority, [Boot, SL]}},
-    BrokerStart = {5, {call, ?MODULE, start_broker, [Boot, SL]}},
+    AuthorityStart = {1, {call, ?MODULE, start_authority, [TestId, Boot, SL]}},
+    BrokerStart = {5, {call, ?MODULE, start_broker, [TestId, Boot, SL]}},
     CheckState = {3, {call, ?MODULE, check_state, []}},
     %% stop: anything that is running can be stopped at will
     Stop =
@@ -290,12 +302,12 @@ command(#cluster_state{auth = Auth, brokers = Brokers, boot = Boot, service_loca
 next_state(_State, _Res, {init, InitialState}) ->
     InitialState;
 
-next_state(#cluster_state{auth = Auth} = State, Res, {call, ?MODULE, start_authority, [_, _]}) ->
+next_state(#cluster_state{auth = Auth} = State, Res, {call, ?MODULE, start_authority, [_, _, _]}) ->
     NewAuth = {call, erlang, element, [1, Res]},
     NewNode = {call, erlang, element, [2, Res]},
     State#cluster_state{auth = Auth#{NewAuth => NewNode}};
 
-next_state(#cluster_state{brokers = Brokers} = State, Res, {call, ?MODULE, start_broker, [_, _]}) ->
+next_state(#cluster_state{brokers = Brokers} = State, Res, {call, ?MODULE, start_broker, [_, _, _]}) ->
     NewBroker = {call, erlang, element, [1, Res]},
     NewNode = {call, erlang, element, [2, Res]},
     State#cluster_state{brokers = Brokers#{NewBroker => NewNode}};

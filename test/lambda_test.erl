@@ -14,8 +14,8 @@
     logger_config/1,
     filter_module/2,
     start_node_link/2,
-    start_node_link/4,
-    start_nodes/3,
+    start_node_link/5,
+    start_nodes/4,
     wait_connection/1
 ]).
 
@@ -126,20 +126,26 @@ filter_module(#{meta := Meta} = LogEvent, Modules) when is_list(Modules) ->
             stop
     end.
 
+-type test_id() :: integer() | string() | atom().
+
 %% @doc Starts an extra node with specified bootstrap, no authority and default command line.
 -spec start_node_link(file:filename_all(), lambda_broker:points()) -> {peer:dest(), node()}.
 start_node_link(Boot, Bootstrap) ->
-    start_node_link(Boot, Bootstrap, [], false).
+    start_node_link(undefined, Boot, Bootstrap, [], false).
 
 %% @doc Starts an extra node with specified bootstrap, authority setting, and additional
 %%      arguments in the command line.
--spec start_node_link(file:filename_all(), [lambda_bootstrap:bootspec()], CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
-start_node_link(Boot, Bootspec, CmdLine, Authority) ->
-    Node = peer:random_name(),
+-spec start_node_link(TestId :: test_id(), Boot :: file:filename_all(),
+    [lambda_bootstrap:bootspec()], CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
+start_node_link(TestId, Boot, Bootspec, CmdLine, Authority) ->
+    Node = random_name(TestId, Authority),
     TestCP = filename:dirname(code:which(?MODULE)),
     Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
-    ExtraArgs = if Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))]; true -> [] end,
-    {ok, Peer} = peer:start_link(#{node => Node, connection => standard_io,
+    ExtraArgs = if
+            Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))];
+            true -> []
+        end,
+    {ok, Peer} = peer:start_link(#{connection => standard_io, node => Node, longnames => false,
         args => [
             "-boot", Boot,
             "-connect_all", "false",
@@ -157,10 +163,10 @@ start_node_link(Boot, Bootspec, CmdLine, Authority) ->
     {Peer, Node}.
 
 %% @doc Starts multiple lambda non-authority nodes concurrently.
--spec start_nodes(file:filename_all(), [lambda_bootstrap:bootspec()], pos_integer()) -> [{peer:dest(), node()}].
-start_nodes(Boot, BootSpec, Count) ->
+-spec start_nodes(test_id(), file:filename_all(), [lambda_bootstrap:bootspec()], pos_integer()) -> [{peer:dest(), node()}].
+start_nodes(TestId, Boot, BootSpec, Count) ->
     lambda_async:pmap([
-        fun () -> {Peer, Node} = start_node_link(Boot, BootSpec, [], false), unlink(Peer), {Peer, Node} end
+        fun () -> {Peer, Node} = start_node_link(TestId, Boot, BootSpec, [], false), unlink(Peer), {Peer, Node} end
         || _ <- lists:seq(1, Count)]).
 
 %% @doc
@@ -186,3 +192,21 @@ wait_nodes([Node | Nodes], Barrier) ->
                 {error, [Node | Nodes]}
             end
     end.
+
+%% @private
+%% Generates a sensible node name for easier tests debugging
+random_name(TestId, Auth) ->
+    %% horrible hack: store mapping of "test id" to "amount of nodes already started in this test"
+    %% problem is, it has to be "shared state" somewhere, saved outside of any process state
+    %% Use "ac_tab" which is... unprotected
+    Seq = ets:update_counter(ac_tab, {?MODULE, TestId}, 1, {{?MODULE, TestId}, 0}),
+    {ok, Host} = inet:gethostname(),
+    list_to_atom(lists:flatten(io_lib:format("~s~s-~b@~s", [format_kind(Auth), format_test_id(TestId), Seq, Host]))).
+
+format_kind(true) -> "auth";
+format_kind(false) -> "worker".
+
+format_test_id(undefined) -> [];
+format_test_id(Int) when is_integer(Int) -> [$- | integer_to_list(Int)];
+format_test_id(Atom) when is_atom(Atom) -> [$- | atom_to_list(Atom)];
+format_test_id(List) when is_list(List) -> [$- | List].

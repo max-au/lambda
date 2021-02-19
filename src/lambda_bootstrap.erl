@@ -24,7 +24,8 @@
     init/1,
     handle_call/3,
     handle_cast/2,
-    handle_info/2
+    handle_info/2,
+    terminate/2
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -35,7 +36,7 @@
 -type bootspec() ::
     {static, #{lambda_discovery:location() => lambda_discovery:address()}} |
     {epmd, [node()]} |
-    {file, file:filename_all()} | %% consult() file on a file system (for test purposes)
+    {file, file:filename_all()} | %% DEBUG only: file on a file system contains the static map
     {custom, module(), atom(), [term()]}. %% callback function
 
 %% @doc
@@ -71,6 +72,10 @@ discover() ->
 -define (LAMBDA_BOOTSTRAP_INTERVAL, 10000).
 
 init({Subs, Spec}) ->
+    %% DEBUG: for {file, ...} bootspec, if this node runs authority, trap exit
+    %%  to ensure terminate/2 is called
+    is_tuple(Spec) andalso element(1, Spec) =:= file andalso is_pid(whereis(lambda_authority)) andalso
+        erlang:process_flag(trap_exit, true),
     {ok, handle_resolve(#lambda_bootstrap_state{subscribers = Subs, spec = Spec})}.
 
 handle_call(_Req, _From, _State) ->
@@ -84,6 +89,12 @@ handle_cast(discover, #lambda_bootstrap_state{timer = Timer} = State) ->
 %% timer handler
 handle_info(resolve, State) ->
     {noreply, handle_resolve(State)}.
+
+terminate(_Reason, #lambda_bootstrap_state{bootstrap = {file, _File}}) ->
+    is_pid(whereis(lambda_authority)) andalso
+        ?LOG_DEBUG("deregister authority", #{domain => [lambda]});
+terminate(_Reason, _State) ->
+    ok.
 
 %%--------------------------------------------------------------------
 %% Internal implementation
@@ -126,30 +137,28 @@ resolve({epmd, Epmd}) ->
 resolve({file, File}) ->
     case is_pid(whereis(lambda_authority)) of
         true ->
-            case file:open(File, [exclusive]) of
-                {ok, Fd} ->
+            Self = {lambda_authority, node()},
+            Peers = case file:consult(File) of
+                {ok, PeersList} ->
+                    maps:from_list(PeersList);
+                _ -> #{}
+            end,
+            case is_map_key(Self, Peers) of
+                true ->
+                    Peers;
+                false ->
                     SelfAddr = lambda_discovery:get_node(),
-                    Self = {lambda_authority, node()},
-                    ?LOG_DEBUG("creating authority ~200p => ~200p", [Self, SelfAddr], #{domain => [lambda]}),
-                    ok = file:write(Fd, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}]))),
-                    file:close(Fd),
-                    #{Self => SelfAddr};
-                {error, eexist} ->
-                    retry_file(File, 10000) %% infinity, for test purposes
-            end;
+                    ?LOG_DEBUG("registering authority ~200p => ~200p", [Self, SelfAddr], #{domain => [lambda]}),
+                    ok = file:write_file(File, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}])), [append]),
+                    Peers#{Self => SelfAddr}
+                end;
         false ->
-            %% debug only: broker should not retry for too long
-            retry_file(File, 20)
-    end.
-
-retry_file(_File, 0) ->
-    #{};
-retry_file(File, Retry) ->
-    case file:consult(File) of
-        {ok, [_|_] = Auths} ->
-            maps:from_list(Auths);
-        _ ->
-            receive after 50 -> retry_file(File, Retry - 1) end
+            case file:consult(File) of
+                {ok, [_|_] = Auths} ->
+                    maps:from_list(Auths);
+                _ ->
+                    #{}
+            end
     end.
 
 resolve_epmd([], _Family, Acc) ->

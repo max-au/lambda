@@ -96,7 +96,7 @@ multi_echo(Count) ->
 
 make_node(Boot, Args, Capacity) ->
     Bootstrap = [{static, #{{lambda_authority, node()} => lambda_discovery:get_node()}}],
-    {Peer, _Node} = lambda_test:start_node_link(Boot, Bootstrap, Args, false),
+    {Peer, _Node} = lambda_test:start_node_link(undefined, Boot, Bootstrap, Args, false),
     {ok, Worker} = peer:apply(Peer, lambda, publish, [?MODULE, #{capacity => Capacity}]),
     unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
     {Peer, Worker}.
