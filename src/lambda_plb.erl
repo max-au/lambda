@@ -29,7 +29,8 @@
     init/1,
     handle_call/3,
     handle_cast/2,
-    handle_info/2
+    handle_info/2,
+    terminate/2
 ]).
 
 %% Internal exports for testing
@@ -240,6 +241,9 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
 
 handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Module, meta = Waiting} = State) when is_list(Waiting) ->
     ?LOG_DEBUG("meta ~200p received for ~200p", [Meta, Waiting], #{domain => [lambda]}),
+    %% start trapping exits just before compiling proxy, to ensure terminate/2 is
+    %%  called when PLB shuts down
+    process_flag(trap_exit, true),
     Module = compile_proxy(Module, Meta),
     [gen:reply(To, Meta) || To <- Waiting],
     handle_info({order, Servers}, State#lambda_plb_state{meta = maps:get(module, Meta)});
@@ -259,6 +263,16 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_plb_state{pid_to_ind
     Cap =:= Removed andalso begin State#lambda_plb_state.queue ! block end,
     %% setelement(Index, State#lambda_state.index_to_pid, undefined), %% not necessary, helps debugging
     {noreply, State#lambda_plb_state{free = [Index | Free], capacity = Cap - Removed, pid_to_index = NewPti}}.
+
+terminate(_Reason, #lambda_plb_state{module = Mod, meta = Meta}) when is_map_key(exports, Meta) ->
+    %% delete proxy code for the module
+    Purged = code:purge(Mod),
+    Deleted = code:delete(Mod),
+    %% ignore errors, there is not much to do when terminating
+    ?LOG_DEBUG("~s purge/delete (~p/~p), reason ~200p", [Mod, Purged, Deleted, _Reason], #{domain => [lambda]}),
+    ok;
+terminate(_Reason, _State) ->
+    ok.
 
 %%--------------------------------------------------------------------
 %% Internal implementation

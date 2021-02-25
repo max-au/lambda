@@ -11,6 +11,7 @@
     start_local/0,
     end_local/0,
     create_release/1,
+    create_release/2,
     logger_config/1,
     filter_module/2,
     start_node_link/2,
@@ -82,14 +83,25 @@ end_local() ->
 
 %% @doc Creates a boot script simulating OTP release. Recommended to use
 %%      with start_node_link or start_nodes. Returns boot script location.
+%%      Contains lambda and sasl apps.
 -spec create_release(file:filename_all()) -> file:filename_all().
 create_release(Priv) ->
-    _ = application:load(lambda),
+    create_release(Priv, []).
+
+%% @doc Creates a boot script simulating OTP release. Recommended to use
+%%      with start_node_link or start_nodes. Returns boot script location.
+%%      Always adds lambda and sasl apps.
+-spec create_release(file:filename_all(), [atom()]) -> file:filename_all().
+create_release(Priv, RelApps) ->
+    AllApps = [kernel, stdlib, compiler, lambda, sasl | RelApps],
     _ = application:load(sasl),
     %% write release spec, *.rel file
     Base = filename:join(Priv, "lambda"),
-    Apps = [begin {ok, Vsn} = application:get_key(App, vsn), {App, Vsn} end ||
-        App <- [kernel, stdlib, compiler, sasl, lambda]],
+    Apps = [begin
+                application:load(App),
+                {ok, Vsn} = application:get_key(App, vsn), {App, Vsn}
+            end ||
+        App <- AllApps],
     RelSpec = {release, {"lambda", "1.0.0"}, {erts, erlang:system_info(version)}, Apps},
     AppSpec = io_lib:fwrite("~p. ", [RelSpec]),
     ok = file:write_file(Base ++ ".rel", lists:flatten(AppSpec)),

@@ -143,11 +143,11 @@ resolve({file, File}) ->
                     maps:from_list(PeersList);
                 _ -> #{}
             end,
-            case is_map_key(Self, Peers) of
-                true ->
+            SelfAddr = lambda_discovery:get_node(),
+            case maps:get(Self, Peers, false) of
+                SelfAddr ->
                     Peers;
-                false ->
-                    SelfAddr = lambda_discovery:get_node(),
+                _ ->
                     ?LOG_DEBUG("registering authority ~200p => ~200p", [Self, SelfAddr], #{domain => [lambda]}),
                     ok = file:write_file(File, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}])), [append]),
                     Peers#{Self => SelfAddr}

@@ -27,7 +27,8 @@
 
 %% API
 -export([
-    start_link/2
+    start_link/2,
+    start_link/3
 ]).
 
 -behaviour(gen_server).
@@ -49,7 +50,14 @@
 %% API implementation
 
 start_link(Module, Capacity) ->
-    gen_server:start_link(?MODULE, [Module, Capacity], []).
+    %% by default, low watermark is 1/2 of requested capacity.
+    %% This may create "wave" effect: when exactly half of the capacity
+    %%  is currently being taken with very slow requests, all subsequent
+    %%  request may be blocked until at least one slow request completes.
+    start_link(Module, Capacity, Capacity div 2).
+
+start_link(Module, Capacity, Watermark) ->
+    gen_server:start_link(?MODULE, [Module, Capacity, Watermark], []).
 
 %%-----------------------------------------------------------------
 %% gen_server implementation
@@ -72,10 +80,10 @@ start_link(Module, Capacity) ->
     total = 0 :: non_neg_integer()
 }).
 
-init([To, Capacity]) ->
+init([To, Capacity, Watermark]) ->
     erlang:monitor(process, To),
     demand(To, Capacity),
-    {ok, #lambda_channel_state{to = To, capacity = Capacity, tokens = Capacity}}.
+    {ok, #lambda_channel_state{to = To, capacity = Capacity, tokens = Capacity, low_watermark = Watermark}}.
 
 %% old-fashion job invoked via message
 %% Technically simulates just the very same thing erpc does

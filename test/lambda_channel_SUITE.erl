@@ -74,7 +74,7 @@ basic(Config) when is_list(Config) ->
     erpc(Channel, erlang, node, [1]),
     %% it was 4 requests, receive more demand now
     receive
-        {demand, Cap, Channel} ->
-            ok
+        {demand, MoreCap, Channel} ->
+            ct:pal("Received demand for ~b requests", [MoreCap])
     end,
     gen:stop(Channel).
