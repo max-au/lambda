@@ -91,15 +91,15 @@ get_count(Idx) ->
 
 -type state() :: #lambda_metrics_state{}.
 
-%% Post data once a minute
--define (POST_INTERVAL, 60_000).
+%% Collect data once a minute
+-define (COLLECT_INTERVAL, 60_000).
 
 init(dirty) ->
     %% If somehow this gen_server dies and restarts, existing counters
     %%  are still retained in persistent_term supported storage
     try persistent_term:get(?COUNT_STORAGE),
         false = process_flag(trap_exit, true),
-        {ok, schedule_post(#lambda_metrics_state{})}
+        {ok, schedule_collect(#lambda_metrics_state{})}
     catch
         error:badarg ->
             init(clean)
@@ -124,31 +124,31 @@ handle_call(get, _From, #lambda_metrics_state{registered = Reg} = State) ->
 handle_cast(_Req, _State) ->
     erlang:error(notsup).
 
-handle_info(post, State) ->
-    post(State),
-    {noreply, schedule_post(State)}.
+handle_info(collect, State) ->
+    collect(State),
+    {noreply, schedule_collect(State)}.
 
 %%--------------------------------------------------------------------
 %% Internal implementation
 
 %% absolute timer used to ensure logging is done without skewing too much
-schedule_post(#lambda_metrics_state{last_collection = LastTick} = State) ->
-    NextTick = schedule_post(LastTick + ?POST_INTERVAL, erlang:monotonic_time(millisecond), ?POST_INTERVAL),
+schedule_collect(#lambda_metrics_state{last_collection = LastTick} = State) ->
+    NextTick = schedule_collect(LastTick + ?COLLECT_INTERVAL, erlang:monotonic_time(millisecond), ?COLLECT_INTERVAL),
     State#lambda_metrics_state{last_collection = NextTick}.
 
-schedule_post(NextTick, Now, _Interval) when NextTick > Now ->
+schedule_collect(NextTick, Now, _Interval) when NextTick > Now ->
     erlang:send_after(NextTick, self(), collect, [{abs, true}]),
     NextTick;
-schedule_post(NextTick, Now, Interval) ->
+schedule_collect(NextTick, Now, Interval) ->
     % skip collection cycle (yes it can be done in 1 step, but, really, why care?)
     SafeTick = NextTick + Interval,
-    schedule_post(SafeTick, Now, Interval).
+    schedule_collect(SafeTick, Now, Interval).
 
-post(_State) ->
+collect(_State) ->
     Atomics = persistent_term:get(?COUNT_STORAGE),
     #{size := Size} = atomics:info(Atomics),
     List = read(Size, Atomics, []),
-    io:format("Counters: ~p~n", [List]).
+    io_lib:format("Counters: ~p~n", [List]).
 
 read(0, _Ref, Acc) ->
     Acc;

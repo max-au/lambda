@@ -1,0 +1,5 @@
+-sname vdemo
+-start_epmd false
+-connect_all false
+-setcookie lambda
+-epmd_module lambda_discovery
