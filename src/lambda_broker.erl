@@ -154,13 +154,13 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
             ?LOG_DEBUG("~s received updated quantity from ~p for ~s (~b)", [Type, Trader, Module, Quantity], #{domain => [lambda]}),
             %% update outstanding sell order with new Quantity
             Outstanding = maps:get(Module, Orders),
-            %% NewOrders = lists:keyreplace(Trader, 3, Orders, {Id, Type, Trader, Quantity, Ex}),
-            NewOut = Outstanding,
-            %% TODO: implement !!!
+            {XId, Type, Trader, _XQ, XMeta, XPrev} = lists:keyfind(Trader, 3, Outstanding),
+            NewOrders = lists:keyreplace(Trader, 3, Outstanding, {XId, Type, Trader, Quantity, XMeta, XPrev}),
             %% notify known exchanges
-            %% Exch = maps:get(Module, Exchanges, []),
+            Exch = maps:get(Module, Exchanges, []),
+            [lambda_exchange:sell(Ex, {Trader, Self}, XId, Quantity, XMeta) || Ex <- Exch],
             {noreply, State#lambda_broker_state{
-                orders = Orders#{Module => NewOut}}};
+                orders = Orders#{Module => NewOrders}}};
         error ->
             ?LOG_DEBUG("~s ~b ~s for ~p (exchanges: ~p)", [Type, Quantity, Module, Trader, Exchanges], #{domain => [lambda]}),
             %% monitor seller
