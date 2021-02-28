@@ -13,6 +13,8 @@
 
 -export([init/1]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -spec start_plb(module(), lambda_plb:options()) -> {ok, pid()} | {error, {already_started, pid()}}.
 start_plb(Mod, Options) ->
     supervisor:start_child(?MODULE, mod_spec(Mod, Options)).
@@ -25,6 +27,7 @@ start_link(Modules) ->
 init(Modules) ->
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
     ChildSpec = [mod_spec(Mod, Options) || {Mod, Options} <- Modules],
+    ?LOG_DEBUG("Resulting childspec: ~200p", [ChildSpec], #{domain => [lambda]}),
     {ok, {SupFlags, ChildSpec}}.
 
 %%--------------------------------------------------------------------

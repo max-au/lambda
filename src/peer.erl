@@ -436,7 +436,7 @@ terminate(_Reason, #peer_state{connection = Port, options = Options}) ->
                 receive {nodedown, Node} -> ok after Timeout -> ok end;
         {Timeout, {ok, standard_io}} ->
             origin_to_peer(port, Port, {message, init, {stop, stop}}),
-            receive {'EXIT', Port, _Reason} -> ok after Timeout -> ok end,
+            receive {'EXIT', Port, _Reason1} -> ok after Timeout -> ok end,
             catch erlang:port_close(Port);
         {Timeout, {ok, _TCP}} ->
             origin_to_peer(tcp, Port, {message, init, {stop, stop}}),

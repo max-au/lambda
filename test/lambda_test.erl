@@ -11,7 +11,7 @@
     start_local/0,
     end_local/0,
     create_release/1,
-    create_release/2,
+    create_release/4,
     logger_config/1,
     filter_module/2,
     start_node_link/2,
@@ -86,28 +86,39 @@ end_local() ->
 %%      Contains lambda and sasl apps.
 -spec create_release(file:filename_all()) -> file:filename_all().
 create_release(Priv) ->
-    create_release(Priv, []).
+    create_release(Priv, [], "lambda", "1.0.0").
 
 %% @doc Creates a boot script simulating OTP release. Recommended to use
 %%      with start_node_link or start_nodes. Returns boot script location.
 %%      Always adds lambda and sasl apps.
--spec create_release(file:filename_all(), [atom()]) -> file:filename_all().
-create_release(Priv, RelApps) ->
+-spec create_release(DestDir :: file:filename_all(), Apps :: [atom()],
+    RelName :: string(), RelVsn :: string()) -> file:filename_all().
+create_release(DestDir, RelApps, RelName, RelVsn) ->
     AllApps = [kernel, stdlib, compiler, lambda, sasl | RelApps],
-    _ = application:load(sasl),
     %% write release spec, *.rel file
-    Base = filename:join(Priv, "lambda"),
-    Apps = [begin
-                application:load(App),
-                {ok, Vsn} = application:get_key(App, vsn), {App, Vsn}
-            end ||
-        App <- AllApps],
-    RelSpec = {release, {"lambda", "1.0.0"}, {erts, erlang:system_info(version)}, Apps},
+    BaseDir = filename:join([DestDir, "releases", RelVsn]),
+    Boot = filename:join(BaseDir, RelName),
+    ok = filelib:ensure_dir(Boot),
+    {Apps, Unload} = lists:foldl(
+        fun (App, {AppVsn, Unl}) ->
+            Unl2 =
+                case application:load(App) of
+                    ok ->
+                        [App | Unl];
+                    {error, {already_loaded, _}} ->
+                        Unl
+                end,
+            {ok, Vsn} = application:get_key(App, vsn),
+            {[{App, Vsn} | AppVsn], Unl2}
+        end, {[], []}, AllApps),
+    RelSpec = {release, {RelName, RelVsn}, {erts, erlang:system_info(version)}, Apps},
     AppSpec = io_lib:fwrite("~p. ", [RelSpec]),
-    ok = file:write_file(Base ++ ".rel", lists:flatten(AppSpec)),
+    ok = file:write_file(Boot ++ ".rel", lists:flatten(AppSpec)),
     %% don't expect any warnings, fail otherwise
-    {ok, systools_make, []} = systools:make_script(Base, [silent, {outdir, Priv}, local]),
-    Base.
+    {ok, systools_make, []} = systools:make_script(Boot, [silent, {outdir, BaseDir}, local]),
+    %% unload apps we loaded
+    [application:unload(App) || App <- Unload],
+    Boot.
 
 %% @doc Helper to create command line that redirects specific logger events to stderr
 %%      Convenient for debugging: add this to start_node_link command line.

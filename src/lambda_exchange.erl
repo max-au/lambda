@@ -16,6 +16,7 @@
 %%
 %%
 %% Exchange match algorithm considers:
+%%  * version
 %%  * capacity
 %%  * failure domains [passed via meta, NOT IMPLEMENTED YET]
 %%  * previous allocations [NOT IMPLEMENTED YET]
@@ -120,14 +121,14 @@ handle_cast(_Req, _State) ->
 handle_info({buy, Id, Quantity, Broker, Meta}, #lambda_exchange_state{module = Module, buy = Buy, sell = Sell} = State) ->
     %% match outstanding sales
     %% shortcut if there is anything for sale - to avoid monitoring new buyer
-    case match(Broker, Module, Id, Quantity, Sell) of
+    case match(Broker, Module, Id, Quantity, Sell, Meta) of
         {NewSell, 0} ->
-            ?LOG_DEBUG("got buy order from ~p for ~b (id ~b, immediately completed)", [Broker, Quantity, Id], #{domain => [lambda]}),
+            ?LOG_DEBUG("got buy order from ~p for ~b (id ~b, meta ~200p, satisfied)", [Broker, Quantity, Id, Meta], #{domain => [lambda]}),
             %% completed at full, nothing to monitor or remember
             {noreply, match_buy(State#lambda_exchange_state{sell = NewSell})};
         {NewSell, Remaining} ->
             %% out of capacity, put buy order in the queue
-            ?LOG_DEBUG("got buy order from ~p for ~b (id ~b)", [Broker, Quantity, Id], #{domain => [lambda]}),
+            ?LOG_DEBUG("got buy order from ~p for ~b (id ~b, meta ~200p)", [Broker, Quantity, Id, Meta], #{domain => [lambda]}),
             MRef = erlang:monitor(process, Broker),
             {noreply, match_buy(State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining, Meta} | Buy], sell = NewSell})}
     end;
@@ -174,9 +175,9 @@ match_buy(#lambda_exchange_state{buy = []} = State) ->
 match_buy(#lambda_exchange_state{sell = Sell} = State) when Sell =:= #{} ->
     %% no sell orders
     State;
-match_buy(#lambda_exchange_state{module = Module, buy = [{Broker, MRef, Id, Quantity, Meta} | More], sell = Sell} = State) ->
+match_buy(#lambda_exchange_state{module = Module, buy = [{Broker, MRef, Id, Quantity, BuyMeta} | More], sell = Sell} = State) ->
     %% should be a match somewhere
-    case match(Broker, Module, Id, Quantity, Sell) of
+    case match(Broker, Module, Id, Quantity, Sell, BuyMeta) of
         {NewSell, 0} ->
             %% stop monitoring this broker reference
             %% NB: there are more monitors, separately, for other orders, could be improved!
@@ -185,13 +186,13 @@ match_buy(#lambda_exchange_state{module = Module, buy = [{Broker, MRef, Id, Quan
             match_buy(State#lambda_exchange_state{buy = More, sell = NewSell});
         {NewSell, Remaining} ->
             %% out of capacity, keep the order in the queue
-            State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining, Meta} | More], sell = NewSell}
+            State#lambda_exchange_state{buy = [{Broker, MRef, Id, Remaining, BuyMeta} | More], sell = NewSell}
     end.
 
 %% Finds full or partial match and replies to buyer's Broker if any match is found
-match(Broker, Module, Id, Quantity, Sell) ->
+match(Broker, Module, Id, Quantity, Sell, BuyMeta) ->
     %% iterate over a map of non-zero-capacity sellers
-    case select(maps:next(maps:iterator(Sell)), Quantity, []) of
+    case select(maps:next(maps:iterator(Sell)), Quantity, BuyMeta, []) of
         {_, Quantity} ->
             {Sell, Quantity};
         {Selected, Remain} ->
@@ -206,16 +207,33 @@ match(Broker, Module, Id, Quantity, Sell) ->
     end.
 
 %% Selects first N sellers with non-zero orders outstanding
-select(none, Remain, Selected) ->
+select(none, Remain, _BuyMeta, Selected) ->
     {Selected, Remain};
-select({Broker, {Q, _MRef, Contact, Meta}, _Next}, Remain, Selected) when Remain =< Q ->
-    {[{Broker, Contact, Remain, Meta} | Selected], 0};
-select({_Broker, {0, _MRef, _Contact, _Meta}, Next}, Remain, Selected) ->
+select({_Broker, {0, _MRef, _Contact, _Meta}, Next}, Remain, BuyMeta, Selected) ->
     %% skip zero
-    select(maps:next(Next), Remain, Selected);
-select({Broker, {Q, _MRef, Contact, Meta}, Next}, Remain, Selected) ->
+    select(maps:next(Next), Remain, BuyMeta, Selected);
+select({_Broker, {_Q, _MRef, _Contact, SellMeta}, _Next} = Iter, Remain, BuyMeta, Selected) ->
+    select_pick(match_meta(SellMeta, BuyMeta), Iter, Remain, BuyMeta, Selected).
+
+select_pick(false, {_Broker, _Sell, Next}, Remain, BuyMeta, Selected) ->
+    %% meta did not match
+    select(maps:next(Next), Remain, BuyMeta, Selected);
+select_pick(true, {Broker, {Q, _MRef, Contact, Meta}, _Next}, Remain, _BuyMeta, Selected) when Remain =< Q ->
+    %% fully satisfied
+    {[{Broker, Contact, Remain, Meta} | Selected], 0};
+select_pick(true, {Broker, {Q, _MRef, Contact, Meta}, Next}, Remain, BuyMeta, Selected) ->
     %% continue picking non-zero
-    select(maps:next(Next), Remain - Q, [{Broker, Contact, Q, Meta} | Selected]).
+    select(maps:next(Next), Remain - Q, BuyMeta, [{Broker, Contact, Q, Meta} | Selected]).
+
+%% @private
+%%  Returns 'true' only when seller/buyer meta match
+match_meta(#{module := SellMod} = _SellMeta, #{module := #{vsn := BuyVsn}} = _BuyMeta) when is_integer(BuyVsn) ->
+    %% buyer requests a specific version, so at least seller meta must have it
+    ?LOG_DEBUG("Metas: sell ~p, buy ~p, check: ~p", [_SellMeta, _BuyMeta, {ok, BuyVsn} =:= maps:find(vsn, SellMod)], #{domain => [lambda]}),
+    {ok, BuyVsn} =:= maps:find(vsn, SellMod);
+match_meta(_SellMeta, _BuyMeta) ->
+    ?LOG_DEBUG("Metas: sell ~p, buy ~p", [_SellMeta, _BuyMeta], #{domain => [lambda]}),
+    true.
 
 complete_order(To, Module, Id, Sellers) ->
     NoBroker = [{Contact, Quantity, Meta} || {_, Contact, Quantity, Meta} <- Sellers],

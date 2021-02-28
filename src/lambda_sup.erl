@@ -108,9 +108,9 @@ check_server_mod(Other) ->
 check_plb_mod(Mod) when is_atom(Mod) ->
     %% should use dynamic (determined in runtime) as default,
     %%  but this mode is not ready yet
-    {Mod, #{high => 10}};
+    {Mod, #{capacity => 10}};
 check_plb_mod({Mod, Options}) when is_atom(Mod), is_map(Options) ->
-    {Mod, Options};
+    {Mod, Options#{capacity => maps:get(capacity, Options, 10)}};
 check_plb_mod(Other) ->
     erlang:error({invalid_module_spec, Other}).
 

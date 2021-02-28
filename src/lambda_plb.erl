@@ -43,7 +43,7 @@
     %% capacity to request from all servers combined
     capacity := non_neg_integer(),
     %% version or version range to accept
-    version => integer(),
+    vsn => integer(),
     %% local broker process (lambda_broker by default)
     broker => lambda:dst(),
     %% disable automatic meta query/compilation
@@ -166,7 +166,8 @@ init({Broker, Module, #{capacity := HW} = Options}) ->
     erlang:monitor(process, Broker),
     ?LOG_DEBUG("requesting ~b ~s from ~p", [HW, Module, Broker], #{domain => [lambda]}),
     %% not planning to cancel the order
-    _ = lambda_broker:buy(Broker, Module, HW, #{version => any}),
+    OrderOpts = #{module => maps:with([vsn], Options)},
+    _ = lambda_broker:buy(Broker, Module, HW, OrderOpts),
     {ok, #lambda_plb_state{module = Module,
         queue = proc_lib:spawn_link(fun queue/0),
         meta = maps:get(compile, Options, []),
@@ -352,11 +353,12 @@ take_bound(Bound, Idx, Mask) ->
 
 %% @private creates proxy, dynamically, when meta has been received for the first time.
 compile_proxy(Module, Meta) ->
-    #{module := #{exports := Exports, attributes := Attrs}} = Meta,
+    #{module := #{exports := Exports}} = Meta,
     %% create a module (technically possible to make an AST, but for compatibility
     %%  reasons it's better to use text lines for compilation)
     ExpLine = "-export([" ++ lists:flatten(lists:join(", ", [io_lib:format("~s/~b", [F, A]) || {F, A} <- Exports])) ++ "]).",
-    Impl = [proxy(Module, F, A, Attrs) || {F, A} <- Exports],
+    Cast = maps:get(cast, Meta, []),
+    Impl = [proxy(Module, F, A, Cast) || {F, A} <- Exports],
     Lines = ["-module(" ++ atom_to_list(Module) ++ ").", ExpLine] ++ Impl,
     %% compile resulting proxy file
     Tokens = [begin {ok, T, _} = erl_scan:string(L), T end || L <- Lines],
@@ -365,6 +367,7 @@ compile_proxy(Module, Meta) ->
     {module, Module} = code:load_binary(Module, "lambda", Binary),
     Module.
 
-proxy(M, F, Arity, _Attrs) ->
+proxy(M, F, Arity, Cast) ->
     Args = lists:join(", ", ["Arg" ++ integer_to_list(Seq) || Seq <- lists:seq(1, Arity)]),
-    lists:flatten(io_lib:format("~s(~s) -> lambda_plb:call(~s, ~s, [~s], infinity).", [F, Args, M, F, Args])).
+    CastCall = case lists:member(F, Cast) of true -> cast; false -> call end,
+    lists:flatten(io_lib:format("~s(~s) -> lambda_plb:~s(~s, ~s, [~s], infinity).", [F, Args, CastCall, M, F, Args])).

@@ -109,6 +109,12 @@ handle_info({connect, To, Cap}, #lambda_listener_state{module = Module, conns = 
 
 module_meta(Module) ->
     Exported = [{F, Arity} || {F, Arity} <- Module:module_info(exports), F =/= module_info],
-    %% hints explaining call/cast behaviour
-    Attrs = [AttrList || {lambda, AttrList} <- Module:module_info(attributes)],
-    #{md5 => Module:module_info(md5), exports => Exported, attributes => Attrs}.
+    %% parse lambda attributes: vsn, cast/call funs
+    lists:foldl(
+        fun ({lambda, [{vsn, Val}]}, ModMeta) ->
+                ModMeta#{vsn => Val};
+            ({lambda, [{cast, Val}]}, ModMeta) ->
+                ModMeta#{cast => [Val | maps:get(cast, ModMeta, [])]};
+            (_, ModMeta) ->
+                ModMeta
+        end, #{md5 => Module:module_info(md5), exports => Exported}, Module:module_info(attributes)).

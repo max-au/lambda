@@ -50,7 +50,7 @@
 }.
 
 -type buy_meta() :: #{
-    version => any
+    vsn => integer()
 }.
 
 -export_type([sell_meta/0, buy_meta/0]).
