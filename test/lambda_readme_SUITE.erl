@@ -113,6 +113,10 @@ start_auth(TestCase, Boot) ->
     BootSpec = [{static, #{{lambda_authority, AuthNode} => Addr}}],
     {AuthPeer, AuthNode, BootSpec}.
 
+wait_capacity_change(_Client, _Plb) ->
+    %% TODO: replace sleep with some capacity notification in PLB itself
+    ct:sleep(200).
+
 %%--------------------------------------------------------------------
 %% Test Cases
 
@@ -145,16 +149,14 @@ basic(Config) when is_list(Config) ->
     {ok, StartedApps} = peer:apply(Srv2, application, ensure_all_started, [lambda]),
     {module, calc} = peer:apply(Srv2, code, load_binary, [calc, nofile, Code]),
     {ok, _Srv2Srv} = peer:apply(Srv2, lambda, publish, [calc, #{capacity => 3}]),
-    %% ideally should be a whitebox flushing queues of the involved parties
-    %% TODO: replace sleep with some capacity notification in PLB itself
-    timer:sleep(200),
+    %% wait for Client Plb to find new server and update capacity
+    wait_capacity_change(Client, Plb),
     %% ensure that client got more capacity: originally 3, 1 request executed,
     %%  2 more left, and 3 more connected = total of 5
     ?assertEqual(5, peer:apply(Client, lambda_plb, capacity, [Plb])),
     %% Shutdown
     lambda_async:pmap([{peer, stop, [S]} || S <- [Server, Srv2]]),
-    %% another flaky sleep, ugh. Probably easier to solve with monitors?
-    timer:sleep(200),
+    wait_capacity_change(Client, Plb),
     %% Capacity goes down to zero
     ?assertEqual(0, peer:apply(Client, lambda_plb, capacity, [Plb])),
     %% stop PLB, which should make 'calc' module unload
@@ -262,7 +264,7 @@ version_demo(Config) when is_list(Config) ->
     %% start client #1 (reuse lambda release, but in the demo it's rebar3 shell)
     {Client1, _ClientNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec,
         ["+S", "2:2", "-lambda", "discover", "[{vdemo,#{capacity=>8}}]"], false),
-    timer:sleep(600),
+    ct:sleep(600),
     %% discover and ensure there is "where" but not "fqdn"
     {ok, Host} = inet:gethostname(),
     ?assertEqual(Host, peer:apply(Client1, vdemo, where, [])),
@@ -281,7 +283,7 @@ version_demo(Config) when is_list(Config) ->
     {_Server2, _} = lambda_test:start_node_link(?FUNCTION_NAME, BootV2, BootSpec,
         ["+S", "2:2", "-lambda", "publish", "[{vdemo,#{capacity=>10}}]"], false),
 
-    timer:sleep(600),
+    ct:sleep(600),
     % ensure it actually has fqdn
     ?assertEqual(Host ++ inet_db:res_option(domain), peer:apply(Client2, vdemo, fqdn, [])),
 

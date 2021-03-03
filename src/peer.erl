@@ -57,7 +57,6 @@
     get_state/1,
     wait_boot/2,
 
-    connect/2,
     disconnect/2,
 
     apply/4,
@@ -232,16 +231,13 @@ wait_boot(Dests, Timeout) when is_list(Dests) ->
 wait_boot(Dest, Timeout) ->
     gen_server:call(Dest, wait_boot, Timeout).
 
-%% @doc Actively attempts to connect remote node through Erlang distribution.
-%%      Makes an attempt every millisecond after previous unsuccessful attempt.
--spec connect(Dest :: dest(), pos_integer()) -> ok | timeout.
-connect(Dest, Timeout) ->
-    Node = get_node(Dest),
-    connect_impl(Node, erlang:system_time(millisecond) + Timeout).
-
 %% @doc Disconnects remote node from Erlang distribution) and waits
 %%  for it to be out of cluster. If this node does not have OOB connection,
 %%  it will shut down completely.
+%%      Use `net_kernel:connect_node` to connect to remote node. If there
+%%  is no known moment when remote node is ready to accept connections, it
+%%  is possible to use `peer:apply(Peer, net_kernel, connect_node, node())`
+%%  to initiate the connection from the other side.
 -spec disconnect(Dest :: dest(), Timeout :: pos_integer()) -> ok | timeout.
 disconnect(Dest, Timeout) ->
     Node = get_node(Dest),
@@ -436,7 +432,7 @@ terminate(_Reason, #peer_state{connection = Port, options = Options}) ->
                 receive {nodedown, Node} -> ok after Timeout -> ok end;
         {Timeout, {ok, standard_io}} ->
             origin_to_peer(port, Port, {message, init, {stop, stop}}),
-            receive {'EXIT', Port, _Reason1} -> ok after Timeout -> ok end,
+            receive {'EXIT', Port, _Reason} -> ok after Timeout -> ok end,
             catch erlang:port_close(Port);
         {Timeout, {ok, _TCP}} ->
             origin_to_peer(tcp, Port, {message, init, {stop, stop}}),
@@ -582,14 +578,7 @@ command_line(Listen, Options) ->
     %% long/short names
     NameArg = name_arg(maps:find(node, Options), maps:find(longnames, Options)),
     %% additional command line args
-    CmdOpts0 = maps:get(args, Options, []),
-    CmdOpts =
-        case lists:member("--setcookie", CmdOpts0) of
-            true ->
-                CmdOpts0;
-            false ->
-                ["-setcookie", atom_to_list(erlang:get_cookie()) | CmdOpts0]
-        end,
+    CmdOpts = maps:get(args, Options, []),
     % start command
     StartCmd =
         case Listen of
@@ -637,25 +626,6 @@ name_arg({ok, Node}, {ok, true}) ->
     ["-name", atom_to_list(Node)];
 name_arg(Node, error) ->
     name_arg(Node, {ok, longnames()}).
-
-connect_impl(Node, BestBefore) ->
-    case lists:member(Node, nodes()) of
-        true ->
-            ok;
-        false ->
-            case net_kernel:connect_node(Node) of
-                true ->
-                    ok;
-                false ->
-                    case erlang:system_time(millisecond) < BestBefore of
-                        true ->
-                            timer:sleep(1),
-                            connect_impl(Node, BestBefore);
-                        false ->
-                            timeout
-                    end
-            end
-    end.
 
 start_relay() ->
     Control = self(),
@@ -744,11 +714,6 @@ validate_hostname([$@ | HostPart] = Host) ->
 -spec forward(Dest :: pid() | atom(), Message :: term()) -> term().
 forward(Dest, Message) ->
     group_leader() ! {message, Dest, Message}.
-
--compile({nowarn_unused_function, flog/2}).
-flog(Fmt, Args) ->
-    X = try io_lib:format(Fmt, Args) catch _:_ -> io_lib:format("~s: ~p~n", [Fmt, Args]) end,
-    file:write_file("/tmp/flog", lists:flatten(X), [append]).
 
 notify_when_started(Kind, Port) ->
     init:notify_when_started(self()) =:= started andalso
@@ -862,9 +827,9 @@ io_server_loop(Kind, Port, Refs, Out) ->
         {'DOWN', CallerRef, _, _, Reason} ->
             %% this is really not expected to happen, because "do_apply"
             %%  catches all exceptions
-            {Ref, Refs3} = maps:take(CallerRef, Refs),
-            {CallerRef, Out3} = maps:take(Ref, Out),
-            peer_to_origin(Kind, Port, {reply, Ref, crash, Reason}),
+            {Seq, Refs3} = maps:take(CallerRef, Refs),
+            {CallerRef, Out3} = maps:take(Seq, Out),
+            peer_to_origin(Kind, Port, {reply, Seq, crash, Reason}),
             io_server_loop(Kind, Port, Refs3, Out3);
         {init, started} ->
             notify_started(Kind, Port),

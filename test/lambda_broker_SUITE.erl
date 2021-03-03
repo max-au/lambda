@@ -152,7 +152,7 @@ peer(Config) when is_list(Config) ->
     %% start a second authority
     {SecondAuthPeer, SecondAuthNode} = lambda_test:start_node_link(undefined, Boot, BootSpec, [], true),
     %% flush all queues from all nodes
-    timer:sleep(2000),
+    ct:sleep(2000),
     %% verify both authorities have 9 connected nodes (8 non-authority)
     AllNodes = peer:apply(AuthorityPeer, erlang, nodes, []) ++ [AuthorityNode],
     AllNodes2 = peer:apply(SecondAuthPeer, erlang, nodes, []) ++ [SecondAuthNode],

@@ -83,7 +83,7 @@ pi(LastResult, Numerator, Denominator, Precision) ->
     end.
 
 sleep(Time) ->
-    timer:sleep(Time).
+    ct:sleep(Time).
 
 %%--------------------------------------------------------------------
 %% convenience primitives
@@ -176,15 +176,15 @@ fail_capacity_wait(Config) when is_list(Config) ->
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
     %% mut wait until spawned processes at least requested once
-    %% TODO: make it bre reliable, not just a sleep
-    timer:sleep(10),
+    %% TODO: make it be reliable, not just a sleep
+    ct:sleep(10),
     %% spawn and kill another batch - so tokens are sent to dead processes
     Dead = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [1], 1) end)
         || _ <- lists:seq(1, Concurrency)],
     wait_complete(Dead),
     %% ^^^ processes spawned above will never be executed remotely
-    %% now sleep to ensure demand is sent and wasted
-    timer:sleep(Delay * 2),
+    %% now sleep (deliberately) to ensure demand is sent and wasted
+    ct:sleep(Delay * 2),
     %% then, spawn more requests and ensure they pass
     Started = erlang:monotonic_time(),
     Spawned1 = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)

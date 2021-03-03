@@ -88,7 +88,7 @@ Change `vdemo.erl` adding `fqdn/0` and add version attribute:
 fqdn() ->
     timer:sleep(10),
     {ok, Host} = inet:gethostname(),
-    Host ++ inet_db:res_option(domain).
+    Host ++"." ++ inet_db:res_option(domain).
 ```
 
 Change node name in vm.args to run two releases concurrently:
@@ -108,7 +108,7 @@ Start one more client shell, and request a v2 of vdemo:
     (client2@max-au-mbp)1> {ok, VDemo2} = lambda:discover(vdemo, #{vsn => 2, capacity => 4}).
     {ok,<0.196.0>}
     (client2@max-au-mbp)2> vdemo:fqdn().
-    "dane-mbp"
+    "max-au-mbp.localdomain"
 ```
 
 ## Bonus
@@ -124,3 +124,46 @@ The behaviour is not reproducible. It may happen that `fqdn/0` is defined, but
 it may also happen it is not, depending on which server is connected first.
 Both cases will result in `error:undef` exception calling `vdemo:fqdn()`,
 but in the former case, no remote call is made (and no token consumed).
+
+# Simplified versioning example
+Start authority in a shell:
+```
+    ERL_FLAGS="-lambda authority true" rebar3 shell --sname authority
+```
+
+Create the same "vdemo.erl" code (in `/tmp/vdemo.erl`).
+
+Start a new shell and compile vdemo.erl there:
+```
+    rebar3 shell --sname server
+    (server@max-au-mbp)1> c("/tmp/vdemo.erl").
+    {ok,vdemo}
+    (server@max-au-mbp)2> lambda:publish(vdemo, #{capacity => 4}).
+    {ok,<0.207.0>}
+```
+
+Start a client shell, discover vdemo:
+
+```
+    rebar3 shell --sname client
+    (client@max-au-mbp)1> lambda:discover(vdemo, #{capacity => 2}).
+    {ok,<0.196.0>}
+```
+
+Edit `/tmp/vdemo.erl` to add `fqdn/0`, and start a second server:
+```
+    rebar3 shell --sname server2
+    (server2@max-au-mbp)1> c("/tmp/vdemo.erl").
+    {ok,vdemo}
+    (server2@max-au-mbp)2> lambda:publish(vdemo, #{capacity => 4}).
+    {ok,<0.207.0>}
+```
+
+Start a second client, and discover specific version of vdemo:
+```
+    rebar3 shell --sname client2
+    (client2@max-au-mbp)1> lambda:discover(vdemo, #{capacity => 2, vsn => 2}).
+    {ok,<0.204.0>}
+    (client2@max-au-mbp)2> vdemo:fqdn().
+    "max-au-mbp."
+```

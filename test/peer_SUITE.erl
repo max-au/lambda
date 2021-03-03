@@ -135,13 +135,12 @@ dist_up_down(Config) when is_list(Config) ->
     Node = peer:random_name(),
     ct:capture_start(),
     {ok, Pid} = peer:start_link(#{node => Node, connection => {{127, 0, 0, 1}, 0},
-            args => ["-eval", "io:format(\"out\")."], shutdown => 1000}),
-    ?assertEqual(ok, peer:connect(Pid, 5000)),
+        args => ["-eval", "io:format(\"out\")."]}),
+    ?assertEqual(true, net_kernel:connect_node(peer:get_node(Pid))),
     ?assertEqual(ok, peer:disconnect(Pid, 5000)),
-    ?assertEqual(ok, peer:connect(Pid, 5000)),
-    timer:sleep(500),
-    ct:capture_stop(),
+    ?assertEqual(true, net_kernel:connect_node(peer:get_node(Pid))),
     peer:stop(Pid),
+    ct:capture_stop(),
     Texts = ct:capture_get(),
     ?assertEqual(["out"], Texts).
 
