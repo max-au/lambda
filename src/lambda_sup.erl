@@ -12,7 +12,7 @@
 
 -export([init/1]).
 
--spec start_link() -> supervisor:startlink_ret().
+-spec start_link() -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 

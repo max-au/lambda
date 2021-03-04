@@ -50,7 +50,7 @@
 }.
 
 -type buy_meta() :: #{
-    vsn => integer()
+    module => lambda:meta()
 }.
 
 -export_type([sell_meta/0, buy_meta/0]).
@@ -69,9 +69,10 @@ authorities(Broker) ->
     gen_server:call(Broker, authorities).
 
 %% @doc adds lists of authorities known
--spec authorities(lambda:dst(), #{pid() => lambda_discovery:address()}) -> [pid()].
+-spec authorities(lambda:dst(), #{pid() => lambda_discovery:address()}) -> ok.
 authorities(Broker, Authorities) ->
-    Broker ! {peers, Authorities}.
+    Broker ! {peers, Authorities},
+    ok.
 
 %%--------------------------------------------------------------------
 %% Extended API

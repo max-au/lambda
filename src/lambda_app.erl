@@ -11,7 +11,7 @@
 
 -behaviour(application).
 
--spec start(normal, []) -> supervisor:startlink_ret().
+-spec start(normal, []) -> {ok, pid()} | {error, {already_started, pid()}}.
 start(normal, []) ->
     lambda_sup:start_link().
 

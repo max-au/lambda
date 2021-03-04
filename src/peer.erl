@@ -432,7 +432,7 @@ terminate(_Reason, #peer_state{connection = Port, options = Options}) ->
                 receive {nodedown, Node} -> ok after Timeout -> ok end;
         {Timeout, {ok, standard_io}} ->
             origin_to_peer(port, Port, {message, init, {stop, stop}}),
-            receive {'EXIT', Port, _Reason} -> ok after Timeout -> ok end,
+            receive {'EXIT', Port, _Reason2} -> ok after Timeout -> ok end,
             catch erlang:port_close(Port);
         {Timeout, {ok, _TCP}} ->
             origin_to_peer(tcp, Port, {message, init, {stop, stop}}),
@@ -586,7 +586,8 @@ command_line(Listen, Options) ->
                 ["-user", atom_to_list(?MODULE)];
             undefined ->
                 Origin = atom_to_list(node()),
-                ["-detached", "-s", atom_to_list(?MODULE), "peer_init", Origin, start_relay(), "-master", Origin];
+                ["-detached", "-s", atom_to_list(?MODULE), "peer_init", Origin, start_relay(),
+                    "-master", Origin, "--setcookie", atom_to_list(erlang:get_cookie())];
             {Ips, Port} ->
                 IpStr = lists:join(",", [inet:ntoa(Ip) || Ip <- Ips]),
                 ["-detached", "-user", atom_to_list(?MODULE), "-origin", IpStr, integer_to_list(Port)]

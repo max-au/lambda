@@ -78,7 +78,8 @@ brokers(Authority) ->
 %% @doc adds a map of potential authority peers
 -spec peers(lambda:dst(), #{lambda_discovery:location() => lambda_discovery:address()}) -> ok.
 peers(Authority, Peers) ->
-    Authority ! {peers, Peers}.
+    Authority ! {peers, Peers},
+    ok.
 
 %%--------------------------------------------------------------------
 %% Cluster authority

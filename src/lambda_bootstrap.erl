@@ -90,7 +90,7 @@ handle_cast(discover, #lambda_bootstrap_state{timer = Timer} = State) ->
 handle_info(resolve, State) ->
     {noreply, handle_resolve(State)}.
 
-terminate(_Reason, #lambda_bootstrap_state{bootstrap = {file, _File}}) ->
+terminate(_Reason, #lambda_bootstrap_state{spec = {file, _File}}) ->
     is_pid(whereis(lambda_authority)) andalso
         ?LOG_DEBUG("deregister authority", #{domain => [lambda]});
 terminate(_Reason, _State) ->
