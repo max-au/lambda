@@ -174,7 +174,7 @@ digraph_prop() ->
     [{doc, "Property-based test ensuring dynamic dependencies behavior is equal to static DAG"}].
 
 digraph_prop(Config) when is_list(Config) ->
-    case proper:quickcheck(prop_digraph_equality(),
+    try proper:quickcheck(prop_digraph_equality(),
         [long_result, {numtests, 50}, {max_size, 500}, {start_size, 10}]) of
         true ->
             ok;
@@ -182,6 +182,9 @@ digraph_prop(Config) when is_list(Config) ->
             {fail, {error, Reason}};
         CounterExample ->
             {fail, {example, CounterExample}}
+    catch
+        error:undef ->
+            {skip, "PropEr not installed"}
     end.
 
 %% -------------------------------------------------------------------

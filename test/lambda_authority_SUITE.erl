@@ -33,10 +33,9 @@
     check_state/0
 ]).
 
--behaviour(proper_statem).
+% -behaviour(proper_statem).
 
 -include_lib("stdlib/include/assert.hrl").
--include_lib("proper/include/proper.hrl").
 
 init_per_suite(Config) ->
     Priv = proplists:get_value(priv_dir, Config),
@@ -158,7 +157,7 @@ proper() ->
 proper(Config) when is_list(Config) ->
     Priv = proplists:get_value(priv_dir, Config),
     Boot = lambda_test:create_release(Priv),
-    case proper:quickcheck(prop_self_healing(Boot, Priv),
+    try proper:quickcheck(prop_self_healing(Boot, Priv),
         [{numtests, 10}, {max_size, 50}, {start_size, 10}, long_result]) of
         true ->
             ok;
@@ -166,6 +165,9 @@ proper(Config) when is_list(Config) ->
             {fail, Err};
         CounterExample ->
             {fail, {counterexample, CounterExample}}
+    catch
+        error:undef ->
+            {skip, "PropEr not installed"}
     end.
 
 prop_self_healing(Boot, SL) ->

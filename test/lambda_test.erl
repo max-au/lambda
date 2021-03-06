@@ -161,14 +161,16 @@ start_node_link(Boot, Bootstrap) ->
 -spec start_node_link(TestId :: test_id(), Boot :: file:filename_all(),
     [lambda_bootstrap:bootspec()], CmdLine :: [string()], boolean()) -> {peer:dest(), node()}.
 start_node_link(TestId, Boot, Bootspec, CmdLine, Authority) ->
-    Node = random_name(TestId, Authority),
+    %% in tests, use short names by default
+    LongNames = case net_kernel:longnames() of true -> true; _ -> false end,
+    Node = random_name(TestId, Authority, LongNames),
     TestCP = filename:dirname(code:which(?MODULE)),
     Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
     ExtraArgs = if
             Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))];
             true -> []
         end,
-    {ok, Peer} = peer:start_link(#{connection => standard_io, node => Node, longnames => false,
+    {ok, Peer} = peer:start_link(#{connection => standard_io, node => Node, longnames => LongNames,
         args => [
             "-boot", Boot,
             "-connect_all", "false",
@@ -218,13 +220,14 @@ wait_nodes([Node | Nodes], Barrier) ->
 
 %% @private
 %% Generates a sensible node name for easier tests debugging
-random_name(TestId, Auth) ->
+random_name(TestId, Auth, LongNames) ->
     %% horrible hack: store mapping of "test id" to "amount of nodes already started in this test"
     %% problem is, it has to be "shared state" somewhere, saved outside of any process state
     %% Use "ac_tab" which is... unprotected
     Seq = ets:update_counter(ac_tab, {?MODULE, TestId}, 1, {{?MODULE, TestId}, 0}),
     {ok, Host} = inet:gethostname(),
-    list_to_atom(lists:flatten(io_lib:format("~s~s-~b@~s", [format_kind(Auth), format_test_id(TestId), Seq, Host]))).
+    FullHost = if LongNames -> io_lib:format("~s.~s", [Host, inet_db:res_option(domain)]); true -> Host end,
+    list_to_atom(lists:flatten(io_lib:format("~s~s-~b@~s", [format_kind(Auth), format_test_id(TestId), Seq, FullHost]))).
 
 format_kind(true) -> "auth";
 format_kind(false) -> "worker".
