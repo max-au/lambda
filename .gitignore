@@ -3,4 +3,7 @@ _build
 *.iml
 rebar3.crashdump
 erl_crash.dump
-
+doc/*.html
+doc/stylesheet.css
+doc/edoc-info
+doc/erlang.png

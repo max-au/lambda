@@ -1,0 +1,10 @@
+ ** this is the overview.doc file for the application 'lambda' **
+
+   @version 0.1.0
+   @author Maxim Fedorov, <maximfca@gmail.com>
+   @title lambda: Computing Service for Erlang.
+
+   @doc
+
+   == lambda ==
+   Computing Service for Erlang.

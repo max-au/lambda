@@ -83,8 +83,8 @@
 %%  Requesting a dependency is asynchronous. It is possible
 %%   to request many discovered dependencies without waiting
 %%   for any of these to be satisfied, and then wait using
-%%   `multi_await/2`.
-%%  Use `require` to combine request and await in a single call.
+%%   `multi_await/2'.
+%%  Use `require' to combine request and await in a single call.
 -spec request(dest(), target(), target()) ->
     value() | {started, pid()} | {error, {cycle, [target()]}}.
 request(Dest, Target, Dependency) ->
@@ -125,7 +125,7 @@ await(Dest, Target) ->
     gen_server:call(Dest, {await, Target}, infinity).
 
 %% @doc awaits for multiple Targets, and returns map of
-%%      results, with the same meaning as `await/2`.
+%%      results, with the same meaning as `await/2'.
 -spec multi_await(dest(), [target()]) -> #{target() => value()}.
 multi_await(Dest, Targets) ->
     await_many(Dest, Targets, [{started, undefined} || _T <- Targets], #{}).

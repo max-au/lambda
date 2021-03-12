@@ -7,8 +7,8 @@
 %% == Features ==
 %% This module provides an extended variant of OTP 'slave' module.
 %% To create and boot peer node with random unique name,
-%%  use `start_link/0`.
-%% Advanced capabilities are enabled via `start_link/1`.
+%%  use `start_link/0'.
+%% Advanced capabilities are enabled via `start_link/1'.
 %% Node may not be distributed, but it is possible
 %%  to control the node via out-of-band connection, TCP or
 %%  stdin/stdout (useful when network is not available).
@@ -234,9 +234,9 @@ wait_boot(Dest, Timeout) ->
 %% @doc Disconnects remote node from Erlang distribution) and waits
 %%  for it to be out of cluster. If this node does not have OOB connection,
 %%  it will shut down completely.
-%%      Use `net_kernel:connect_node` to connect to remote node. If there
+%%      Use `net_kernel:connect_node' to connect to remote node. If there
 %%  is no known moment when remote node is ready to accept connections, it
-%%  is possible to use `peer:apply(Peer, net_kernel, connect_node, node())`
+%%  is possible to use `peer:apply(Peer, net_kernel, connect_node, node())'
 %%  to initiate the connection from the other side.
 -spec disconnect(Dest :: dest(), Timeout :: pos_integer()) -> ok | timeout.
 disconnect(Dest, Timeout) ->
