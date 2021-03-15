@@ -113,13 +113,20 @@ basic() ->
 basic(Config) when is_list(Config) ->
     Priv = proplists:get_value(priv_dir, Config),
     Boot = proplists:get_value(boot, Config),
+    %% detect low-power VM and don't run large clusters
+    {Totals, Auths} =
+        case erlang:system_info(schedulers) of
+            Large when Large > 10 -> {[2, 4, 10, 32, 100], [1, 2, 3, 6]};
+            Normal when Normal > 5 -> {[2, 4, 10, 32], [1, 2, 3, 6]};
+            _Small -> {[2, 4, 10], [1, 2, 3]}
+        end,
     %% run many combinations
     [
         begin
             ServiceLocator = filename:join(Priv,
                 lists:flatten(io_lib:format("service-~s~b_~b.loc", [?FUNCTION_NAME, Total, Auth]))),
             verify_topo(Boot, ServiceLocator, Total, Auth)
-        end || Total <- [2, 4, 10, 32, 100], Auth <- [1, 2, 3, 6], Total >= Auth].
+        end || Total <- Totals, Auth <- Auths, Total >= Auth].
 
 reconnect() ->
     [{doc, "Ensure that broker reconnects to authorities"}].

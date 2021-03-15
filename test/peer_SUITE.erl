@@ -105,7 +105,7 @@ dist(Config) when is_list(Config) ->
     ?assertEqual(ok, peer:disconnect(Pid, 5000)),
     %% ^^^ this makes the node go down
     receive
-        {'DOWN', MRef, process, Pid, _Reason} ->
+        {'DOWN', MRef, process, Pid, {nodedown, Node}} ->
             ok
     after 2000 ->
         link(Pid),
@@ -139,10 +139,11 @@ dist_up_down(Config) when is_list(Config) ->
     ?assertEqual(true, net_kernel:connect_node(peer:get_node(Pid))),
     ?assertEqual(ok, peer:disconnect(Pid, 5000)),
     ?assertEqual(true, net_kernel:connect_node(peer:get_node(Pid))),
+    ct:sleep(1000), %% without this pause, peer node is not quick enough to process printing
     peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
-    ?assertEqual(["out"], Texts).
+    ?assertEqual(["out"], Texts, {node, Node}).
 
 %% -------------------------------------------------------------------
 %% OOB cases

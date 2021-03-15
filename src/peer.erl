@@ -314,7 +314,7 @@ init(Options) ->
 
     %% close port if running detached
     Conn = if Detached ->
-                   erlang:port_close(Port),
+                   catch erlang:port_close(Port), %% catch for race conditions
                    receive {'EXIT', Port, _} -> undefined end;
                true ->
                    Port
@@ -390,6 +390,12 @@ handle_info({inet_async, LSock, _Ref, {ok, CliSocket}},
     ok = inet:setopts(CliSocket, [{active, once}]),
     catch gen_tcp:close(LSock),
     {noreply, State#peer_state{connection = CliSocket, listen_socket = undefined}};
+
+handle_info({inet_async, LSock, _Ref, {error, Reason}},
+    #peer_state{listen_socket = LSock} = State) ->
+    %% failed to accept a TCP connection
+    catch gen_tcp:close(LSock),
+    {stop, {inet_async, Reason}, State#peer_state{connection = undefined, listen_socket = undefined}};
 
 %% booting: peer notifies via Erlang distribution
 handle_info({peer_started, Node, Pid},
@@ -515,7 +521,8 @@ decode_port_data(<<Char:8, Rest/binary>>, Str, Bin) ->
 %% concatenates bitstring (by default it's not possible to
 %%  add bits to non-byte-aligned binary)
 quad_concat(Bin, Quad, Size) when Size rem 8 =:= 4 ->
-    <<BinPart:(Size div 8)/binary, Before:4>> = Bin,
+    ByteSize = Size div 8,
+    <<BinPart:ByteSize/binary, Before:4>> = Bin,
     <<BinPart/binary, Before:4, Quad:4>>;
 quad_concat(Bin, Quad, _Size) ->
     <<Bin/binary, Quad:4>>.
