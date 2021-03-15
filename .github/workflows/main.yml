@@ -40,9 +40,9 @@ jobs:
     - name: Install Erlang
       run: brew install erlang
     - name: Install rebar3
-      run: rebar3 compile
+      run: brew install rebar3
     - name: CT tests
-      run: rebar3 ct
+      run: rebar3 do edoc,ct
 
   windows:
     name: Test on Windows
@@ -53,6 +53,6 @@ jobs:
     - name: Install Erlang
       run: choco install erlang
     - name: Install rebar3
-      run: rebar3 compile
+      run: choco install rebar3
     - name: CT tests
       run: rebar3 ct
