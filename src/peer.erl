@@ -602,13 +602,19 @@ command_line(Listen, Options) ->
     %% code path
     CodePath = module_path_args(code:which(?MODULE)),
     %% command line: build
-    %% BINDIR environment variable is already set
-    %% EMU variable it also set
-    Root = code:root_dir(),
-    Erts = filename:join(Root, lists:concat(["erts-", erlang:system_info(version)])),
-    BinDir = filename:join(Erts, "bin"),
-    ErlExec = filename:join(BinDir, "erlexec"),
-    {ErlExec, NameArg ++ StartCmd ++ CodePath ++ CmdOpts}.
+    ProgName =
+        case init:get_argument(progname) of
+            {ok, [[Prog]]} ->
+                Prog;
+            _ ->
+                %% BINDIR environment variable is already set
+                %% EMU variable it also set
+                Root = code:root_dir(),
+                Erts = filename:join(Root, lists:concat(["erts-", erlang:system_info(version)])),
+                BinDir = filename:join(Erts, "bin"),
+                filename:join(BinDir, "erlexec")
+        end,
+    {ProgName, NameArg ++ StartCmd ++ CodePath ++ CmdOpts}.
 
 module_path_args(cover_compiled) ->
     {file, File} = cover:is_compiled(?MODULE),

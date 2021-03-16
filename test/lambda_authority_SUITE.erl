@@ -154,8 +154,8 @@ reconnect(Config) when is_list(Config) ->
     %% force bootstrap
     ?assertEqual(ok, peer:apply(Victim, lambda_bootstrap, discover, [])),
     %% must be connected again
-    ct:pal("Moment of truth~n"),
     ?assertEqual(ok, peer:apply(Victim, lambda_test, wait_connection, [Auths])),
+    %% just in case: verify CLI returns the same information
     stop_tier(AllPeers).
 
 proper() ->

@@ -38,10 +38,12 @@
     start_link/0,
     authorities/1,
     brokers/1,
-    peers/2
+    peers/2,
+    cli/0
 ]).
 
 -behaviour(gen_server).
+-behaviour(cli).
 
 %% gen_server callbacks
 -export([
@@ -80,6 +82,30 @@ brokers(Authority) ->
 peers(Authority, Peers) ->
     Authority ! {peers, Peers},
     ok.
+
+%%--------------------------------------------------------------------
+%% CLI support
+
+cli() ->
+    #{
+        commands => #{
+            "authority" => #{
+                commands => #{
+                    "peers" => #{
+                        help => "list of peer authorities"
+                    },
+                    "brokers" => #{
+                        help => "list of connected brokers",
+                        arguments => [
+                            #{name => limit, short => $l, long => "-limit",
+                                type => {int, [{min, 1}, {max, 100}]},
+                                help => "Maximum number of brokers to print"}
+                        ]
+                    }
+                }
+            }
+        }
+    }.
 
 %%--------------------------------------------------------------------
 %% Cluster authority
