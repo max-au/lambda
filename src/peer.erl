@@ -50,6 +50,7 @@
 
     start_link/0,
     start_link/1,
+    start/1,
     stop/1,
 
     get_node/1,
@@ -80,9 +81,8 @@
 
 %% Internal exports for stdin/stdout, non-distribution RPC, and tests
 -export([
-    start/0,
-    peer_init/1,
-    forward/2
+    start/0,        %% this function must be named "start", requirement for user.erl
+    peer_init/1
 ]).
 
 %% Convenience type to address specific instance
@@ -105,18 +105,21 @@
 %% Peer node start options
 -type start_options() :: #{
     node => node(),                     %% node name to start
+    oneway => false,                    %% true (default): one-way link from origin to peer node,
+                                        %%  when peer terminates, origin does not get any signal
+                                        %% false: two-way link, when peer terminates, origin process
+                                        %%  also terminates
     remote => remote(),                 %% support for SSH/Docker, enables remote node start
     longnames => boolean(),             %% long/short names (default is net_kernel:longnames())
     connection => connection(),         %% out-of-band connection
     args => [string()],                 %% additional command line parameters
     env => [{string(), string()}],      %% additional environment
-    wait_boot => false | timeout(),     %% start_link boots the node and waits for
-                                        %%  it to be running, 5 sec by default, but can be set to false
+    wait_boot => false | timeout(),     %% boot the node and waits for it to be running, 15 sec by default
     shutdown => brutal_kill | timeout() %% halt the peer brutally, or send init:stop() and wait
 }.
 
 %% Peer node states
--type peer_state() :: booting | running | shutting_down.
+-type peer_state() :: down | booting | running | shutting_down.
 
 -export_type([
     dest/0,
@@ -139,8 +142,8 @@
 %% Default timeout for peer node to boot.
 -define (WAIT_BOOT_TIMEOUT, 15000).
 
-%% @doc creates sufficiently random node name,
-%%      attempting to guess short/longnames from the origin node.
+%% @doc Creates sufficiently random node name,
+%%      attempting to guess short/long option from the origin node.
 %%      Favours longnames if distribution is not started.
 -spec random_name() -> node().
 random_name() ->
@@ -157,13 +160,13 @@ random_name(LongNames) when is_boolean(LongNames) ->
     Node = list_to_atom(lists:concat([?MODULE, "-", OsPid, Uniq])),
     create_name(Node, LongNames, 1).
 
-%% @doc starts a distributed node with random name, on this host,
+%% @doc Starts a distributed node with random name, on this host,
 %%      and waits for that node to boot.
 -spec start_link() -> {ok, pid()} | {error, Reason :: term()}.
 start_link() ->
     start_link(random_name()).
 
-%% @doc starts peer node.
+%% @doc Starts peer node, linked to the calling process.
 %%      Accepts additional command line arguments and
 %%      other important options, like OOB connection, or stdin/stdout
 %%      RPC. Node name 'nonode@nohost' has special meaning, node starts
@@ -171,30 +174,16 @@ start_link() ->
 %%      meaning (dynamic node name, since OTP 23)
 -spec start_link(atom() | start_options()) -> {ok, pid()} | {error, Reason :: term()}.
 start_link(Node) when is_atom(Node) ->
-    start_link(#{node => Node});
-start_link(#{node := Node, wait_boot := false} = Options) ->
-    maps:find(connection, Options) =:= error andalso not erlang:is_alive() andalso error(not_alive),
-    %% normalise long/short name
-    Long = maps:get(longnames, Options, longnames()),
-    gen_server:start_link(?MODULE, Options#{node => create_name(Node, Long, 1), longnames => Long}, []);
-start_link(#{wait_boot := false} = Options) ->
-    maps:find(connection, Options) =:= error andalso not erlang:is_alive() andalso error(not_alive),
-    %% no name
-    gen_server:start_link(?MODULE, Options, []);
+    start_impl(#{node => Node}, link);
 start_link(Options) ->
-    case start_link(Options#{wait_boot => false}) of
-        {ok, Pid} ->
-            try
-                ok = wait_boot(Pid, maps:get(wait_boot, Options, ?WAIT_BOOT_TIMEOUT)),
-                {ok, Pid}
-            catch
-                exit:timeout ->
-                    gen_server:stop(Pid),
-                    {error, {boot, timeout}}
-            end;
-        Error ->
-            Error
-    end.
+    start_impl(Options, link).
+
+%% @doc Starts peer node, not linked to the calling process.
+-spec start(atom() | start_options()) -> {ok, pid()} | {error, Reason :: term()}.
+start(Node) when is_atom(Node) ->
+    start_impl(#{node => Node}, no_link);
+start(Options) ->
+    start_impl(Options, no_link).
 
 %% @doc Stops controlling process, shutting down peer node synchronously
 -spec stop(dest()) -> ok.
@@ -211,7 +200,7 @@ get_node(Dest) ->
 get_state(Dest) ->
     gen_server:call(Dest, get_state).
 
-%% @doc waits until peer node(s) boot sequence completes.
+%% @doc Waits until peer node or nodes boot sequence completes.
 %%      Returns ok if all peers started successfully.
 -spec wait_boot(dest() | [dest()], timeout()) -> Result | #{dest() => Result} when
     Result :: ok.
@@ -231,7 +220,7 @@ wait_boot(Dests, Timeout) when is_list(Dests) ->
 wait_boot(Dest, Timeout) ->
     gen_server:call(Dest, wait_boot, Timeout).
 
-%% @doc Disconnects remote node from Erlang distribution) and waits
+%% @doc Disconnects remote node connected via Erlang distribution and waits
 %%  for it to be out of cluster. If this node does not have OOB connection,
 %%  it will shut down completely.
 %%      Use `net_kernel:connect_node' to connect to remote node. If there
@@ -348,10 +337,10 @@ handle_call(get_node, _From, #peer_state{options = Options} = State) ->
 
 handle_call(wait_boot, _From, #peer_state{peer_state = running} = State) ->
     {reply, ok, State};
-handle_call(wait_boot, _From, #peer_state{peer_state = shutting_down} = State) ->
-    {reply, shutting_down, State};
 handle_call(wait_boot, From, #peer_state{peer_state = booting, wait_boot = WB} = State) ->
     {noreply, State#peer_state{wait_boot = [From | WB]}};
+handle_call(wait_boot, _From, #peer_state{peer_state = Other} = State) when Other =:= down; Other =:= shutting_down ->
+    {reply, Other, State};
 
 handle_call(get_state, _From, #peer_state{peer_state = PeerState} = State) ->
     {reply, PeerState, State}.
@@ -395,6 +384,7 @@ handle_info({inet_async, LSock, _Ref, {error, Reason}},
     #peer_state{listen_socket = LSock} = State) ->
     %% failed to accept a TCP connection
     catch gen_tcp:close(LSock),
+    %% stop unconditionally, it is essentially a part of gen_server:init callback
     {stop, {inet_async, Reason}, State#peer_state{connection = undefined, listen_socket = undefined}};
 
 %% booting: peer notifies via Erlang distribution
@@ -409,17 +399,17 @@ handle_info({peer_started, Node, Pid},
 %% nodedown: no-oob dist-connected peer node is down, stop the server
 handle_info({nodedown, Node},
     #peer_state{options = #{node := Node}, connection = undefined} = State) ->
-    {stop, {nodedown, Node}, State#peer_state{peer_state = shutting_down}};
+    maybe_stop({nodedown, Node}, State);
 
 %% port terminated: cannot proceed, stop the server
 handle_info({'EXIT', Port, Reason}, #peer_state{connection = Port} = State) ->
     catch erlang:port_close(Port),
-    {stop, Reason, State#peer_state{connection = undefined}};
+    maybe_stop(Reason, State);
 
 handle_info({tcp_closed, Sock}, #peer_state{connection = Sock} = State) ->
     %% TCP connection closed, no i/o port - assume node is stopped
     catch gen_tcp:close(Sock),
-    {stop, normal, State#peer_state{connection = undefined}}.
+    maybe_stop(normal, State).
 
 %%--------------------------------------------------------------------
 %% cleanup/termination
@@ -449,6 +439,42 @@ terminate(_Reason, #peer_state{connection = Port, options = Options}) ->
 
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+start_impl(#{node := Node} = Options, Link) ->
+    maps:find(connection, Options) =:= error andalso not erlang:is_alive() andalso error(not_alive),
+    %% normalise long/short name
+    Long = maps:get(longnames, Options, longnames()),
+    start_it(Options#{node => create_name(Node, Long, 1), longnames => Long}, Link);
+start_impl(Options, Link) ->
+    maps:find(connection, Options) =:= error andalso not erlang:is_alive() andalso error(not_alive),
+    %% no name
+    start_it(Options, Link).
+
+start_it(Options, link) ->
+    maybe_wait_boot(gen_server:start_link(?MODULE, Options, []), Options);
+start_it(Options, no_link) ->
+    maybe_wait_boot(gen_server:start(?MODULE, Options, []), Options).
+
+maybe_wait_boot(Ret, #{wait_boot := false}) ->
+    Ret;
+maybe_wait_boot({ok, Pid}, Options) ->
+    try
+        ok = wait_boot(Pid, maps:get(wait_boot, Options, ?WAIT_BOOT_TIMEOUT)),
+        {ok, Pid}
+    catch
+        exit:timeout ->
+            gen_server:stop(Pid),
+            {error, {boot, timeout}}
+    end;
+maybe_wait_boot(Error, _Options) ->
+    Error.
+
+maybe_stop(Reason, #peer_state{options = #{oneway := false}} = State) ->
+    {stop, Reason, State#peer_state{peer_state = down, connection = undefined}};
+maybe_stop(Reason, #peer_state{peer_state = booting} = State) ->
+    {stop, Reason, State#peer_state{peer_state = down, connection = undefined}};
+maybe_stop(_Reason, State) ->
+    {noreply, State#peer_state{peer_state = down, connection = undefined}}.
 
 %% i/o protocol from origin:
 %%  * {io_reply, ...}
@@ -722,12 +748,6 @@ validate_hostname([$@ | HostPart] = Host) ->
 
 %%--------------------------------------------------------------------
 %% peer node implementation
-
-%% @doc Attempts to forward a message from peer node to origin
-%%      node via OOB connection. Useful mostly for testing.
--spec forward(Dest :: pid() | atom(), Message :: term()) -> term().
-forward(Dest, Message) ->
-    group_leader() ! {message, Dest, Message}.
 
 notify_when_started(Kind, Port) ->
     init:notify_when_started(self()) =:= started andalso

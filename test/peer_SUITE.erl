@@ -21,6 +21,7 @@
 %% Test cases
 -export([
     dist/0, dist/1,
+    two_way_link/0, two_way_link/1,
     dist_io_redirect/0, dist_io_redirect/1,
     basic/0, basic/1,
     detached/0, detached/1,
@@ -40,7 +41,7 @@ suite() ->
 
 groups() ->
     [
-        {dist, [parallel], [dist, dist_io_redirect, dist_up_down]},
+        {dist, [parallel], [dist, two_way_link, dist_io_redirect, dist_up_down]},
         {oob, [parallel], [basic, detached, dyn_peer, stop_peer, init_debug, io_redirect, multi_node, duplicate_name]},
         {remote, [parallel], [ssh, docker]}
     ].
@@ -100,10 +101,25 @@ dist(Config) when is_list(Config) ->
     %% but not oob...
     ?assertException(error, noconnection, peer:apply(Pid, erlang, node, [])),
     %% unlink and monitor
+    ?assertEqual(ok, peer:disconnect(Pid, 5000)),
+    %% ^^^ this makes the node go down
+    ?assertEqual({badrpc,nodedown}, rpc:call(Node, erlang, node, [])),
+    peer:stop(Pid).
+
+two_way_link() ->
+    [{doc, "Tests two-way link"}].
+
+two_way_link(Config) when is_list(Config) ->
+    Node = peer:random_name(),
+    {ok, Pid} = peer:start_link(#{node => Node, oneway => false}),
+    ?assertEqual(Node, rpc:call(Node, erlang, node, [])),
+    ?assertException(error, noconnection, peer:apply(Pid, erlang, node, [])),
+    %% unlink and monitor
     unlink(Pid),
     MRef = monitor(process, Pid),
     ?assertEqual(ok, peer:disconnect(Pid, 5000)),
     %% ^^^ this makes the node go down
+    %% since two-way link is requested, it triggers peer to stop
     receive
         {'DOWN', MRef, process, Pid, {nodedown, Node}} ->
             ok
@@ -148,6 +164,12 @@ dist_up_down(Config) when is_list(Config) ->
 %% -------------------------------------------------------------------
 %% OOB cases
 
+%% @private Attempts to forward a message from peer node to origin
+%%      node via OOB connection. Useful mostly for testing.
+-spec forward(Dest :: pid() | atom(), Message :: term()) -> term().
+forward(Dest, Message) ->
+    group_leader() ! {message, Dest, Message}.
+
 basic() ->
     [{doc, "Tests peer node start, and do some RPC via stdin/stdout"}].
 
@@ -165,7 +187,7 @@ basic(Config) when is_list(Config) ->
     ?assertEqual(true, peer:apply(Pid, code, add_path, [Path])),
     %% fancy RPC via message exchange (uses forwarding from the peer)
     Control = self(),
-    RFun = fun() -> receive do -> peer:forward(Control, done) end end,
+    RFun = fun() -> receive do -> forward(Control, done) end end,
     RemotePid = peer:apply(Pid, erlang, spawn, [RFun]),
     peer:send(Pid, RemotePid, do),
     %% wait back from that process
@@ -187,7 +209,7 @@ detached(Config) when is_list(Config) ->
     ?assertEqual(true, peer:apply(Pid, code, add_path, [Path])),
     %% fancy RPC via message exchange (uses forwarding from the peer)
     Control = self(),
-    RFun = fun() -> receive do -> peer:forward(Control, done) end end,
+    RFun = fun() -> receive do -> forward(Control, done) end end,
     RemotePid = peer:apply(Pid, erlang, spawn, [RFun]),
     peer:send(Pid, RemotePid, do),
     %% wait back from that process
@@ -230,6 +252,7 @@ init_debug(Config) when is_list(Config) ->
     ct:capture_start(),
     {ok, Pid} = peer:start_link(#{node => Node,
         connection => standard_io, args => ["-init_debug"]}),
+    ct:sleep(1000), %% without this sleep, peer is not fast enough to print
     peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
