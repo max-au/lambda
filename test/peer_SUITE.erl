@@ -111,7 +111,7 @@ two_way_link() ->
 
 two_way_link(Config) when is_list(Config) ->
     Name = peer:random_name(),
-    {ok, Node} = peer:start_link(#{name => Name, oneway => false}),
+    {ok, Node} = peer:start_link(#{name => Name, link => true}),
     %% verify node started locally
     ?assertEqual(Node, rpc:call(Node, erlang, node, [])),
     %% verify there is no OOB connection
@@ -300,7 +300,13 @@ ssh() ->
     [{doc, "Tests ssh (localhost) node support"}].
 
 ssh(Config) when is_list(Config) ->
-    {ok, Pid} = peer:start_link(#{remote => {rsh, "ssh", ["localhost"]}, connection => standard_io}),
+    %% figure out path to 'erl' locally ('erl' may not be in path on a remote node)
+    Root = code:root_dir(),
+    Erts = filename:join(Root, lists:concat(["erts-", erlang:system_info(version)])),
+    BinDir = filename:join(Erts, "bin"),
+    Prog = filename:join(BinDir, "erlexec"),
+    {ok, Pid} = peer:start_link(#{remote => {rsh, "ssh", ["localhost"]}, connection => standard_io, progname => Prog,
+        args => ["-env", "BINDIR", os:getenv("BINDIR")]}),
     %% nonode at nohost, but controlled!
     ?assertEqual('nonode@nohost', peer:call(Pid, erlang, node, [])),
     peer:stop(Pid).
@@ -323,7 +329,8 @@ docker(Config) when is_list(Config) ->
     ?assertEqual(Node, peer:call(Node, erlang, node, [])),
     peer:stop(Node).
 
-docker_start({Exec, Args}, _ListenPort, _Options, Host) ->
+docker_start({_Exec, Args}, _ListenPort, _Options, Host) ->
     %% stub: docker support requires slightly more involvement,
     %%  and ability to create a release programmatically
-    {"ssh", [Host, Exec | Args]}.
+    Erl = os:find_executable("erl"),
+    {"ssh", [Host, Erl | Args]}.

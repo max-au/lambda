@@ -61,6 +61,9 @@
     send/3
 ]).
 
+%% Internal: for test_server compatibility only.
+-export([parse_args/1]).
+
 %% Could be gen_statem too, with peer_state, but most interactions
 %%  are anyway available in all states.
 -behaviour(gen_server).
@@ -125,6 +128,7 @@
                                         %%  when peer terminates, origin does not get any signal
                                         %% true: two-way link, when peer terminates, origin process
                                         %%  also terminates
+    progname => string(),               %% path to "erl", by default, init:get_argument(progname)
     connection => connection(),         %% out-of-band connection
     args => [string()],                 %% additional command line parameters
     env => [{string(), string()}],      %% additional environment (useful for rsh)
@@ -270,7 +274,7 @@ send(Dest, To, Message) ->
 
 -type state() :: #peer_state{}.
 
--spec init(start_options()) -> {ok, state()}.
+-spec init([Name :: atom(), ... ]) -> {ok, state()}.
 init([Name, Options]) ->
     process_flag(trap_exit, true), %% need this to ensure terminate/2 is called
 
@@ -422,6 +426,24 @@ terminate(_Reason, #peer_state{connection = Port, options = Options}) ->
 %%--------------------------------------------------------------------
 %% Internal implementation
 
+%% @doc Internal function, parsing command line, with escaping and quoting support.
+parse_args([]) ->
+    [];
+parse_args(CmdLine) ->
+    %% following regex splits command line, preserving quoted arguments, into argv[] list
+    Re = "((?:\"[^\"\\\\]*(?:\\\\[\\S\\s][^\"\\\\]*)*\"|'[^'\\\\]*(?:\\\\[\\S\\s][^'\\\\]*)*'|\\/[^\\/\\\\]*(?:\\\\[\\S\\s][^\\/\\\\]*)*\\/[gimy]*(?=\\s|$)|(?:\\\\\\s|\\S))+)(?=\\s|$)",
+    {match, Args} = re:run(CmdLine, Re, [{capture, all_but_first, list}, global]),
+    %% unquote arguments. It is possible to change regex capture groups to avoid extra processing.
+    [unquote(Arg) || [Arg] <- Args].
+
+unquote([Q | Arg]) when Q =:= $\"; Q =:= $\' ->
+    case lists:last(Arg) of
+        Q -> lists:droplast(Arg);
+        _ -> [Q | Arg]
+    end;
+unquote(Arg) ->
+    Arg.
+
 %% Starting new node on a specific host.
 start_impl(#{host := _} = Options, Link) ->
     %% if OOB connection is not requested, origin must be alive
@@ -544,7 +566,7 @@ longnames(Options, Longnames) ->
 
 %% @private Two-way link implementation: when two-way link is enabled, peer
 %%          process stops when peer node terminates.
-maybe_stop(Reason, #peer_state{options = #{oneway := false}} = State) ->
+maybe_stop(Reason, #peer_state{options = #{link := true}} = State) ->
     {stop, Reason, State#peer_state{peer_state = down, connection = undefined}};
 maybe_stop(Reason, #peer_state{peer_state = booting} = State) ->
     {stop, Reason, State#peer_state{peer_state = down, connection = undefined}};
@@ -713,19 +735,25 @@ command_line(Name, Listen, Options) ->
     %% code path, XXX: remove when included in stdlib
     CodePath = module_path_args(code:which(?MODULE)),
     %% command line: build
-    ProgName =
-        case init:get_argument(progname) of
-            {ok, [[Prog]]} ->
-                Prog;
-            _ ->
-                %% BINDIR environment variable is already set
-                %% EMU variable it also set
-                Root = code:root_dir(),
-                Erts = filename:join(Root, lists:concat(["erts-", erlang:system_info(version)])),
-                BinDir = filename:join(Erts, "bin"),
-                filename:join(BinDir, "erlexec")
-        end,
+    ProgName = progname(Options),
+    %% build command line
     {ProgName, NameArg ++ StartCmd ++ CodePath ++ CmdOpts}.
+
+progname(#{progname := Prog}) ->
+    Prog;
+progname(_Options) ->
+    case init:get_argument(progname) of
+        {ok, [[Prog]]} ->
+            Prog;
+        _ ->
+            %% if progname is not known, use `erlexec` from the sam ERTS version we're currently running
+            %% BINDIR environment variable is already set
+            %% EMU variable it also set
+            Root = code:root_dir(),
+            Erts = filename:join(Root, lists:concat(["erts-", erlang:system_info(version)])),
+            BinDir = filename:join(Erts, "bin"),
+            filename:join(BinDir, "erlexec")
+    end.
 
 module_path_args(cover_compiled) ->
     {file, File} = cover:is_compiled(?MODULE),
