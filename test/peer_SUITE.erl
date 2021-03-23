@@ -47,8 +47,8 @@ groups() ->
     ].
 
 all() ->
-    %%[{group, dist}, {group, oob}, {group, remote}].
-    [{group, dist}, {group, oob}].
+    [{group, dist}, {group, oob}, {group, remote}].
+    %% [{group, dist}, {group, oob}].
 
 init_per_suite(Config) ->
     case erl_epmd:names() of
@@ -91,33 +91,36 @@ end_per_group(_TestCase, Config) ->
 %% Distribution-enabled cases
 
 dist() ->
-    [{doc, "Tests node that is detached, and has no OOB, connects via dist"}].
+    [{doc, "Classic behaviour: detached peer with no OOB, connects via dist"}].
 
+%% Classic 'slave': start new node locally, with random name.
 dist(Config) when is_list(Config) ->
-    {ok, Pid} = peer:start_link(),
-    Node = peer:get_node(Pid),
+    {ok, Node} = peer:start_link(),
     %% distribution is expected to be connected
     ?assertEqual(Node, rpc:call(Node, erlang, node, [])),
     %% but not oob...
-    ?assertException(error, noconnection, peer:apply(Pid, erlang, node, [])),
+    ?assertException(error, noconnection, peer:call(Node, erlang, node, [])),
     %% unlink and monitor
-    ?assertEqual(ok, peer:disconnect(Pid, 5000)),
+    ?assertEqual(true, net_kernel:disconnect(Node)),
     %% ^^^ this makes the node go down
-    ?assertEqual({badrpc,nodedown}, rpc:call(Node, erlang, node, [])),
-    peer:stop(Pid).
+    ?assertEqual({badrpc, nodedown}, rpc:call(Node, erlang, node, [])),
+    peer:stop(Node).
 
 two_way_link() ->
     [{doc, "Tests two-way link"}].
 
 two_way_link(Config) when is_list(Config) ->
-    Node = peer:random_name(),
-    {ok, Pid} = peer:start_link(#{node => Node, oneway => false}),
+    Name = peer:random_name(),
+    {ok, Node} = peer:start_link(#{name => Name, oneway => false}),
+    %% verify node started locally
     ?assertEqual(Node, rpc:call(Node, erlang, node, [])),
-    ?assertException(error, noconnection, peer:apply(Pid, erlang, node, [])),
+    %% verify there is no OOB connection
+    ?assertException(error, noconnection, peer:call(Node, erlang, node, [])),
     %% unlink and monitor
+    Pid = whereis(Node),
     unlink(Pid),
     MRef = monitor(process, Pid),
-    ?assertEqual(ok, peer:disconnect(Pid, 5000)),
+    ?assertEqual(true, net_kernel:disconnect(Node)),
     %% ^^^ this makes the node go down
     %% since two-way link is requested, it triggers peer to stop
     receive
@@ -132,8 +135,10 @@ dist_io_redirect() ->
     [{doc, "Tests i/o redirection working for dist"}].
 
 dist_io_redirect(Config) when is_list(Config) ->
-    Node = peer:random_name(),
-    {ok, Pid} = peer:start_link(Node),
+    Name = lists:concat([?FUNCTION_NAME, "-", os:getpid()]),
+    {ok, Host} = inet:gethostname(),
+    Node = list_to_atom(lists:concat([Name, "@", Host])),
+    {ok, Pid} = peer:start_link(#{name => Name, register => false}),
     ct:capture_start(),
     rpc:call(Node, io, format, ["test."]),
     ?assertEqual(ok, peer:send(Pid, init, {stop, stop})),
@@ -148,15 +153,15 @@ dist_up_down() ->
 
 dist_up_down(Config) when is_list(Config) ->
     %% also check that "args" work with i/o redirection
-    Node = peer:random_name(),
+    Name = lists:concat([?FUNCTION_NAME, "-", os:getpid()]),
     ct:capture_start(),
-    {ok, Pid} = peer:start_link(#{node => Node, connection => {{127, 0, 0, 1}, 0},
+    {ok, Node} = peer:start_link(#{name => Name, connection => {{127, 0, 0, 1}, 0},
         args => ["-eval", "io:format(\"out\")."]}),
-    ?assertEqual(true, net_kernel:connect_node(peer:get_node(Pid))),
-    ?assertEqual(ok, peer:disconnect(Pid, 5000)),
-    ?assertEqual(true, net_kernel:connect_node(peer:get_node(Pid))),
+    ?assertEqual(true, net_kernel:connect_node(Node)),
+    ?assertEqual(true, net_kernel:disconnect(Node)),
+    ?assertEqual(true, net_kernel:connect_node(Node)),
     ct:sleep(1000), %% without this pause, peer node is not quick enough to process printing
-    peer:stop(Pid),
+    peer:stop(Node),
     ct:capture_stop(),
     Texts = ct:capture_get(),
     ?assertEqual(["out"], Texts, {node, Node}).
@@ -176,19 +181,18 @@ basic() ->
 basic(Config) when is_list(Config) ->
     {ok, Pid} = peer:start_link(#{connection => standard_io, wait_boot => false}),
     ?assertEqual(booting, peer:get_state(Pid)),
-    ?assertEqual('nonode@nohost', peer:get_node(Pid)),
     %% boot the node
     ?assertEqual(ok, peer:wait_boot(Pid, infinity)),
     %% test the default (std) channel
-    ?assertEqual('nonode@nohost', peer:apply(Pid, erlang, node, [])),
-    ?assertException(throw, ball, peer:apply(Pid, erlang, throw, [ball])),
+    ?assertEqual('nonode@nohost', peer:call(Pid, erlang, node, [])),
+    ?assertException(throw, ball, peer:call(Pid, erlang, throw, [ball])),
     %% setup code path to this module (needed to "fancy RPC")
     Path = filename:dirname(code:which(?MODULE)),
-    ?assertEqual(true, peer:apply(Pid, code, add_path, [Path])),
+    ?assertEqual(true, peer:call(Pid, code, add_path, [Path])),
     %% fancy RPC via message exchange (uses forwarding from the peer)
     Control = self(),
     RFun = fun() -> receive do -> forward(Control, done) end end,
-    RemotePid = peer:apply(Pid, erlang, spawn, [RFun]),
+    RemotePid = peer:call(Pid, erlang, spawn, [RFun]),
     peer:send(Pid, RemotePid, do),
     %% wait back from that process
     receive done -> ok end,
@@ -201,23 +205,23 @@ detached() ->
 
 detached(Config) when is_list(Config) ->
     {ok, Pid} = peer:start_link(#{connection => 0}),
-    ?assertEqual('nonode@nohost', peer:apply(Pid, erlang, node, [])),
+    ?assertEqual('nonode@nohost', peer:call(Pid, erlang, node, [])),
     %% check exceptions
-    ?assertException(throw, ball, peer:apply(Pid, erlang, throw, [ball])),
+    ?assertException(throw, ball, peer:call(Pid, erlang, throw, [ball])),
     %% check tcp forwarding
     Path = filename:dirname(code:which(?MODULE)),
-    ?assertEqual(true, peer:apply(Pid, code, add_path, [Path])),
+    ?assertEqual(true, peer:call(Pid, code, add_path, [Path])),
     %% fancy RPC via message exchange (uses forwarding from the peer)
     Control = self(),
     RFun = fun() -> receive do -> forward(Control, done) end end,
-    RemotePid = peer:apply(Pid, erlang, spawn, [RFun]),
+    RemotePid = peer:call(Pid, erlang, spawn, [RFun]),
     peer:send(Pid, RemotePid, do),
     %% wait back from that process
     receive done -> ok end,
     %% logging via TCP
     ct:capture_start(),
-    peer:apply(Pid, io, format, ["one."]),
-    peer:apply(Pid, erlang, apply, [io, format, ["two."]]),
+    peer:call(Pid, io, format, ["one."]),
+    peer:call(Pid, erlang, apply, [io, format, ["two."]]),
     peer:stop(Pid),
     ct:capture_stop(),
     Texts = ct:capture_get(),
@@ -229,31 +233,29 @@ dyn_peer() ->
 
 dyn_peer(Config) when is_list(Config) ->
     {ok, Pid} = peer:start_link(#{connection => standard_io}),
-    Node = peer:random_name(),
-    {ok, _} = peer:apply(Pid, net_kernel, start, [[Node, longnames]]),
-    ?assertEqual(Node, peer:apply(Pid, erlang, node, [])),
+    Node = list_to_atom(lists:concat([peer:random_name(), "@forced.host"])),
+    {ok, _} = peer:call(Pid, net_kernel, start, [[Node, longnames]]),
+    ?assertEqual(Node, peer:call(Pid, erlang, node, [])),
     peer:stop(Pid).
 
 stop_peer() ->
     [{doc, "Test that peer shuts down even when node sleeps, but stdin is closed"}].
 
 stop_peer(Config) when is_list(Config) ->
-    Node = peer:random_name(false), %% piggybacking, shortnames
-    {ok, Pid} = peer:start_link(#{node => Node,
+    {ok, Node} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME),
         connection => standard_io, args => ["-eval", "timer:sleep(60000)."]}),
     %% shutdown node
-    peer:stop(Pid).
+    peer:stop(Node).
 
 init_debug() ->
     [{doc, "Test that debug messages in init work"}].
 
 init_debug(Config) when is_list(Config) ->
-    Node = peer:random_name(false),
     ct:capture_start(),
-    {ok, Pid} = peer:start_link(#{node => Node,
+    {ok, Node} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME), shutdown => 1000,
         connection => standard_io, args => ["-init_debug"]}),
     ct:sleep(1000), %% without this sleep, peer is not fast enough to print
-    peer:stop(Pid),
+    peer:stop(Node),
     ct:capture_stop(),
     Texts = ct:capture_get(),
     %% every boot script starts with this
@@ -265,8 +267,8 @@ io_redirect() ->
 io_redirect(Config) when is_list(Config) ->
     {ok, Pid} = peer:start_link(#{connection => standard_io}),
     ct:capture_start(),
-    peer:apply(Pid, io, format, ["test."]),
-    peer:apply(Pid, erlang, apply, [io, format, ["second."]]),
+    peer:call(Pid, io, format, ["test."]),
+    peer:call(Pid, erlang, apply, [io, format, ["second."]]),
     ct:capture_stop(),
     Texts = ct:capture_get(),
     peer:stop(Pid),
@@ -276,21 +278,19 @@ multi_node() ->
     [{doc, "Tests several nodes starting concurrently"}].
 
 multi_node(Config) when is_list(Config) ->
-    Pids = [begin
-                N = peer:random_name(),
-                {ok, Pid} = peer:start_link(#{node => N, wait_boot => false, connection => standard_io}),
-                {N, Pid}
-            end || _ <- lists:seq(1, 4)],
-    ok = peer:wait_boot([P || {_, P} <- Pids], 10000),
-    [?assertEqual(N, peer:apply(Pid, erlang, node, [])) || {N, Pid} <- Pids],
-    [?assertEqual(ok, peer:stop(Pid)) || {_, Pid} <- Pids].
+    Nodes = [
+        peer:start_link(#{name => peer:random_name(), wait_boot => false, connection => standard_io})
+        || _ <- lists:seq(1, 4)],
+    ok = peer:wait_boot([Node || {ok, Node} <- Nodes], 10000),
+    [?assertEqual(Node, peer:call(Node, erlang, node, [])) || {ok, Node} <- Nodes],
+    [?assertEqual(ok, peer:stop(Node)) || {ok, Node} <- Nodes].
 
 duplicate_name() ->
     [{doc, "Tests that a node with the same name fails to start"}].
 
 duplicate_name(Config) when is_list(Config) ->
-    {ok, Pid1} = peer:start_link(#{connection => standard_io, node => ?FUNCTION_NAME}),
-    ?assertException(exit, _, peer:start_link(#{connection => standard_io, node => ?FUNCTION_NAME})),
+    {ok, Pid1} = peer:start_link(#{connection => standard_io, name => ?FUNCTION_NAME, register => false}),
+    ?assertException(exit, _, peer:start_link(#{connection => standard_io, name => ?FUNCTION_NAME})),
     peer:stop(Pid1).
 
 %% -------------------------------------------------------------------
@@ -300,9 +300,9 @@ ssh() ->
     [{doc, "Tests ssh (localhost) node support"}].
 
 ssh(Config) when is_list(Config) ->
-    {ok, Pid} = peer:start_link(#{remote => {ssh, "localhost"}, connection => standard_io}),
+    {ok, Pid} = peer:start_link(#{remote => {rsh, "ssh", ["localhost"]}, connection => standard_io}),
     %% nonode at nohost, but controlled!
-    ?assertEqual('nonode@nohost', peer:apply(Pid, erlang, node, [])),
+    ?assertEqual('nonode@nohost', peer:call(Pid, erlang, node, [])),
     peer:stop(Pid).
 
 docker() ->
@@ -317,12 +317,11 @@ docker(Config) when is_list(Config) ->
     %os:cmd("rebar3 as prod tar"),
     %os:cmd("docker build -t lambda ."),
 
-    Node = 'docker@container.id.au',
-    {ok, Pid} = peer:start_link(#{node => Node, longnames => true,
+    {ok, Node} = peer:start_link(#{name => docker, host => "container.id.au", longnames => true,
         remote => fun (Orig, Listen, Options) -> docker_start(Orig, Listen, Options, "localhost") end,
         connection => standard_io}),
-    ?assertEqual(Node, peer:apply(Pid, erlang, node, [])),
-    peer:stop(Pid).
+    ?assertEqual(Node, peer:call(Node, erlang, node, [])),
+    peer:stop(Node).
 
 docker_start({Exec, Args}, _ListenPort, _Options, Host) ->
     %% stub: docker support requires slightly more involvement,

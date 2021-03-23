@@ -96,10 +96,9 @@ multi_echo(Count) ->
 
 make_node(Boot, Args, Capacity) ->
     Bootstrap = [{static, #{{lambda_authority, node()} => lambda_discovery:get_node()}}],
-    {Peer, _Node} = lambda_test:start_node_link(undefined, Boot, Bootstrap, Args, false),
-    {ok, Worker} = peer:apply(Peer, lambda, publish, [?MODULE, #{capacity => Capacity}]),
-    unlink(Peer), %% need to unlink - otherwise pmap will terminate peer controller
-    {Peer, Worker}.
+    Node = lambda_test:start_node(undefined, Boot, Bootstrap, Args, false),
+    {ok, Worker} = peer:call(Node, lambda, publish, [?MODULE, #{capacity => Capacity}]),
+    {Node, Worker}.
 
 wait_complete(Procs) when is_list(Procs) ->
     wait_complete(maps:from_list(Procs));
@@ -128,10 +127,10 @@ lb(Config) when is_list(Config) ->
     Boot = proplists:get_value(boot, Config),
     %% start worker nodes, when every next node has +1 more capacity
     WorkIds = lists:seq(1, WorkerCount),
-    Peers = lambda_async:pmap([{fun make_node/3, [Boot, ["+S", integer_to_list(Seq)], Seq]}
+    Nodes = lambda_async:pmap([{fun make_node/3, [Boot, ["+S", integer_to_list(Seq)], Seq]}
         || Seq <- WorkIds]),
     %% check peers scheduler counts
-    WorkIds = lambda_async:pmap([{peer, apply, [P, erlang, system_info, [schedulers]]} || {P, _} <- Peers]),
+    WorkIds = lambda_async:pmap([{peer, call, [N, erlang, system_info, [schedulers]]} || {N, _} <- Nodes]),
     %% expected result
     Precalculated = pi(Precision),
     %% don't care about capacity waiting! this it the WHOLE IDEA!
@@ -145,14 +144,14 @@ lb(Config) when is_list(Config) ->
     %% ensure weights and total counts expected
     TotalWeight = WorkerCount * (WorkerCount + 1) div 2,
     {WorkerCount, WeightedCounts} = lists:foldl(
-        fun ({Peer, Worker}, {Idx, WC}) ->
-            {0, Count} = peer:apply(Peer, gen_server, call, [Worker, get_count]),
+        fun ({Node, Worker}, {Idx, WC}) ->
+            {0, Count} = peer:call(Node, gen_server, call, [Worker, get_count]),
             ct:pal("Worker ~b/~b received ~b/~b~n",
                 [Idx + 1, WorkerCount, Count, SampleCount * (Idx + 1) div TotalWeight]),
             {Idx + 1, [{Idx + 1, Count} | WC]}
-        end, {0, []}, Peers),
+        end, {0, []}, Nodes),
     %% stop all peers concurrently
-    lambda_async:pmap([{peer, stop, [P]} || {P, _} <- Peers]),
+    lambda_async:pmap([{peer, stop, [N]} || {N, _} <- Nodes]),
     {_, Counts} = lists:unzip(WeightedCounts),
     ?assertEqual(SampleCount, lists:sum(Counts)),
     [begin

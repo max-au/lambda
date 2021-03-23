@@ -56,20 +56,19 @@ start_tier(TestId, Boot, Count, AuthorityCount, ServiceLocator) when Count >= Au
     lambda_async:pmap([
         fun () ->
             Auth = Seq =< AuthorityCount,
-            {Peer, Node} = lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], Auth),
-            unlink(Peer),
-            {Peer, Node, Auth}
+            Node = lambda_test:start_node(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], Auth),
+            {Node, Auth}
         end
         || Seq <- lists:seq(1, Count)]).
 
 stop_tier(Peers) ->
-    lambda_async:pmap([{peer, stop, [P]} || {P, _, _} <- Peers]).
+    lambda_async:pmap([{peer, stop, [N]} || {N, _} <- Peers]).
 
 wait_brokers(BrokerPeers, AuthPeers, BrokerPids, AuthPids) ->
     AuthViews = lambda_async:pmap([
-        {peer, apply, [P, lambda_authority, brokers, [lambda_authority]]} || P <- AuthPeers]),
+        {peer, call, [P, lambda_authority, brokers, [lambda_authority]]} || P <- AuthPeers]),
     BrokerViews = lambda_async:pmap([
-        {peer, apply, [P, lambda_broker, authorities, [lambda_broker]]} || P <- BrokerPeers]),
+        {peer, call, [P, lambda_broker, authorities, [lambda_broker]]} || P <- BrokerPeers]),
     case lists:all(fun (V) -> lists:sort(V) =:= BrokerPids end, AuthViews) andalso
          lists:all(fun (V) -> lists:sort(V) =:= AuthPids end, BrokerViews) of
         true ->
@@ -79,27 +78,28 @@ wait_brokers(BrokerPeers, AuthPeers, BrokerPids, AuthPids) ->
     end.
 
 verify_topo(Boot, ServiceLocator, TotalCount, AuthCount) ->
+    ct:pal("Verifying ~b nodes with ~b authorities (sl: ~s)", [TotalCount, AuthCount, ServiceLocator]),
     %% start a tier, with several authorities
     AllPeers = start_tier(integer_to_list(AuthCount) ++ "-" ++ integer_to_list(TotalCount),
         Boot, TotalCount, AuthCount, ServiceLocator),
     %% Peers running Authority
-    AuthPeers = [A || {A, _, true} <- AllPeers],
-    {Peers, Nodes, _AuthBit} = lists:unzip3(AllPeers),
+    AuthPeers = [A || {A, true} <- AllPeers],
+    {Nodes, _AuthBit} = lists:unzip(AllPeers),
     %% force bootstrap: bootstrap -> authority/broker
-    lambda_async:pmap([{peer, apply, [P, lambda_bootstrap, discover, []]} || P <- Peers]),
+    lambda_async:pmap([{peer, call, [N, lambda_bootstrap, discover, []]} || N <- Nodes]),
     %% authorities must connect to all nodes - that's a mesh!
-    lambda_async:pmap([{peer, apply, [A, lambda_test, wait_connection, [Nodes]]} || A <- AuthPeers]),
+    lambda_async:pmap([{peer, call, [A, lambda_test, wait_connection, [Nodes]]} || A <- AuthPeers]),
     %%
     ct:pal("Authorities connected (~b/~b)", [AuthCount, TotalCount]),
     %% Find all broker pids on all nodes
     Brokers = lists:sort(lambda_async:pmap(
-        [{peer, apply, [P, erlang, whereis, [lambda_broker]]} || P <- Peers])),
+        [{peer, call, [N, erlang, whereis, [lambda_broker]]} || N <- Nodes])),
     %% get auth pids
-    AuthPids = lists:sort(lambda_async:pmap([{peer, apply,
+    AuthPids = lists:sort(lambda_async:pmap([{peer, call,
         [P, erlang, whereis, [lambda_authority]]} || P <- AuthPeers])),
     %% need to flush broker -authority -broker queues reliably, but without triggering any erlang message sends
     %% anti-pattern: yes, use wait_until, as otherwise need a synchronous way to start the app/release
-    wait_brokers(Peers, AuthPeers, Brokers, AuthPids),
+    wait_brokers(Nodes, AuthPeers, Brokers, AuthPids),
     %% stop everything
     stop_tier(AllPeers).
 
@@ -137,24 +137,24 @@ reconnect(Config) when is_list(Config) ->
     ServiceLocator = filename:join(Priv, "reconnect-service.loc"),
     %% start a tier, with several authorities
     AllPeers = start_tier(reconnect, Boot, 4, 2, ServiceLocator),
-    {Peers, [A1, A2 | _], _} = lists:unzip3(AllPeers),
-    Victim = lists:nth(4, Peers),
+    {[A1, A2 | _] = Nodes, _} = lists:unzip(AllPeers),
+    Victim = lists:nth(4, Nodes),
     Auths = lists:sort([A1, A2]),
     %% wait for expected connections
     ct:pal("Attempting first connection"),
-    ?assertEqual(ok, peer:apply(Victim, lambda_bootstrap, discover, [])),
-    ?assertEqual(ok, peer:apply(Victim, lambda_test, wait_connection, [Auths])),
+    ?assertEqual(ok, peer:call(Victim, lambda_bootstrap, discover, [])),
+    ?assertEqual(ok, peer:call(Victim, lambda_test, wait_connection, [Auths])),
     ct:pal("First connection successful~n"),
     %% force disconnect last node from first 2
-    ?assertEqual(Auths, lists:sort(peer:apply(Victim, erlang, nodes, []))),
-    true = peer:apply(Victim, net_kernel, disconnect, [A1]),
-    true = peer:apply(Victim, net_kernel, disconnect, [A2]),
+    ?assertEqual(Auths, lists:sort(peer:call(Victim, erlang, nodes, []))),
+    true = peer:call(Victim, net_kernel, disconnect, [A1]),
+    true = peer:call(Victim, net_kernel, disconnect, [A2]),
     %% verify it has been disconnected
-    [] = peer:apply(Victim, erlang, nodes, []),
+    [] = peer:call(Victim, erlang, nodes, []),
     %% force bootstrap
-    ?assertEqual(ok, peer:apply(Victim, lambda_bootstrap, discover, [])),
+    ?assertEqual(ok, peer:call(Victim, lambda_bootstrap, discover, [])),
     %% must be connected again
-    ?assertEqual(ok, peer:apply(Victim, lambda_test, wait_connection, [Auths])),
+    ?assertEqual(ok, peer:call(Victim, lambda_test, wait_connection, [Auths])),
     %% just in case: verify CLI returns the same information
     stop_tier(AllPeers).
 
@@ -197,10 +197,10 @@ start_broker(TestId, Boot, ServiceLocator) ->
     lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], false).
 
 connect(Peer1, Node2) ->
-    peer:apply(Peer1, net_kernel, connect_node, [Node2]).
+    peer:call(Peer1, net_kernel, connect_node, [Node2]).
 
 disconnect(Peer1, Node2) ->
-    peer:apply(Peer1, net_kernel, disconnect, [Node2]).
+    peer:call(Peer1, net_kernel, disconnect, [Node2]).
 
 check_state() ->
     ok.
@@ -213,12 +213,12 @@ check_state() ->
     test_id :: integer(),
     boot :: file:filename_all(),
     service_locator :: file:filename_all(),
-    auth = #{} :: #{lambda:dst() => node()},
-    brokers = #{} :: #{lambda:dst() => node()}
+    auth = #{} :: #{node() => node()},
+    brokers = #{} :: #{node() => node()}
 }).
 
 cleanup(#cluster_state{auth = Auth, brokers = Brokers}) ->
-    lambda_async:pmap([{peer, stop, [Pid]} || Pid <- maps:keys(Brokers) ++ maps:keys(Auth)]).
+    lambda_async:pmap([{peer, stop, [Node]} || Node <- maps:keys(Brokers) ++ maps:keys(Auth)]).
 
 initial_state(Boot, Priv) ->
     TestId = case erlang:get(test_id) of undefined -> 0; Id -> Id + 1 end,
@@ -236,8 +236,8 @@ precondition(#cluster_state{auth = Auth}, {call, ?MODULE, start_broker, [_, _, _
 precondition(#cluster_state{brokers = Brokers}, {call, ?MODULE, start_authority, [_, _, _]}) ->
     map_size(Brokers) < ?MAX_BROKERS;
 
-precondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, peer, stop, [Pid]}) ->
-    is_map_key(Pid, Auth) orelse is_map_key(Pid, Brokers);
+precondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, peer, stop, [Node]}) ->
+    is_map_key(Node, Auth) orelse is_map_key(Node, Brokers);
 
 precondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, ?MODULE, connect, [Peer, Node]}) ->
     is_map_key(Peer, Auth) orelse is_map_key(Peer, Brokers) orelse
@@ -252,22 +252,22 @@ precondition(_State, {call, ?MODULE, check_state, []}) ->
 
 postcondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, ?MODULE, check_state, []}, _Res) ->
     Peers = maps:keys(Auth) ++ maps:keys(Brokers),
-    lambda_async:pmap([{peer, apply, [P, lambda_bootstrap, discover, []]} || P <- Peers]),
+    lambda_async:pmap([{peer, call, [P, lambda_bootstrap, discover, []]} || P <- Peers]),
     %% authorities must connect to all nodes - that's a mesh!
     Nodes = maps:values(Auth) ++ maps:values(Brokers),
-    Connected = lambda_async:pmap([{peer, apply, [A, lambda_test, wait_connection, [Nodes -- [N]]]}
+    Connected = lambda_async:pmap([{peer, call, [A, lambda_test, wait_connection, [Nodes -- [N]]]}
         || {A, N} <- maps:to_list(Auth)]),
     case lists:usort(Connected) of
         [] ->
             %% no authorities, but we can check that no brokers are connected
-            Empty = lambda_async:pmap([{peer, apply, [B, erlang, nodes, []]} || B <- maps:keys(Brokers)]),
+            Empty = lambda_async:pmap([{peer, call, [B, erlang, nodes, []]} || B <- maps:keys(Brokers)]),
             lists:all(fun (Null) -> Null =:= [] end, Empty);
         [ok] ->
             %% verify brokers are connected _only_ to authorities, but never between themselves
             Auths = lists:sort(maps:values(Auth)),
-            MustBeAuths = lambda_async:pmap([{peer, apply, [B, erlang, nodes, []]} || B <- maps:keys(Brokers)]),
+            MustBeAuths = lambda_async:pmap([{peer, call, [B, erlang, nodes, []]} || B <- maps:keys(Brokers)]),
             Res = lists:all(fun (MaybeAuths) -> lists:sort(MaybeAuths) =:= Auths end, MustBeAuths),
-            FromAuth = if Auth =/= #{} -> peer:apply(hd(maps:keys(Auth)), erlang, nodes, []); true -> [] end,
+            FromAuth = if Auth =/= #{} -> peer:call(hd(maps:keys(Auth)), erlang, nodes, []); true -> [] end,
             Res orelse io:format(standard_error, "Actual: ~200p while expecting ~200p~nAuth knows ~200p and should know ~200p~n", [MustBeAuths, Auths, FromAuth, Nodes]),
             Res;
         _NotOk ->
@@ -312,14 +312,10 @@ next_state(_State, _Res, {init, InitialState}) ->
     InitialState;
 
 next_state(#cluster_state{auth = Auth} = State, Res, {call, ?MODULE, start_authority, [_, _, _]}) ->
-    NewAuth = {call, erlang, element, [1, Res]},
-    NewNode = {call, erlang, element, [2, Res]},
-    State#cluster_state{auth = Auth#{NewAuth => NewNode}};
+    State#cluster_state{auth = Auth#{Res => Res}};
 
 next_state(#cluster_state{brokers = Brokers} = State, Res, {call, ?MODULE, start_broker, [_, _, _]}) ->
-    NewBroker = {call, erlang, element, [1, Res]},
-    NewNode = {call, erlang, element, [2, Res]},
-    State#cluster_state{brokers = Brokers#{NewBroker => NewNode}};
+    State#cluster_state{brokers = Brokers#{Res => Res}};
 
 next_state(State, _Res, {call, ?MODULE, connect, [_Peer1, _Node2]}) ->
     State;
@@ -330,6 +326,6 @@ next_state(State, _Res, {call, ?MODULE, disconnect, [_Peer1, _Node2]}) ->
 next_state(State, _Res, {call, ?MODULE, check_state, []}) ->
     State;
 
-next_state(#cluster_state{auth = Auth, brokers = Brokers} = State, _Res, {call, peer, stop, [Pid]}) ->
+next_state(#cluster_state{auth = Auth, brokers = Brokers} = State, _Res, {call, peer, stop, [Node]}) ->
     %% just remove Pid from all processes known
-    State#cluster_state{auth = maps:remove(Pid, Auth), brokers = maps:remove(Pid, Brokers)}.
+    State#cluster_state{auth = maps:remove(Node, Auth), brokers = maps:remove(Node, Brokers)}.

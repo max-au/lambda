@@ -109,7 +109,7 @@ make_app(Priv, Name, Vsn, Mod, Code) ->
 
 start_auth(TestCase, Boot) ->
     {AuthPeer, AuthNode} = lambda_test:start_node_link(TestCase, Boot, undefined, ["+S", "2:2"], true),
-    Addr = peer:apply(AuthPeer, lambda_discovery, get_node, []),
+    Addr = peer:call(AuthPeer, lambda_discovery, get_node, []),
     BootSpec = [{static, #{{lambda_authority, AuthNode} => Addr}}],
     {AuthPeer, AuthNode, BootSpec}.
 
@@ -127,41 +127,39 @@ basic(Config) when is_list(Config) ->
     {ok, Host} = inet:gethostname(),
     DistArgs = dist_args(Host),
     %% Prefer longnames (for 'peer' does it too)
-    SrvNode = list_to_atom(lists:concat([authority, "@", Host,
-        case inet_db:res_option(domain) of [] -> ""; Domain -> [$. | Domain] end])),
-    {ok, Server} = peer:start_link(#{connection => standard_io, node => SrvNode,
+    {ok, Server} = peer:start_link(#{connection => standard_io, name => authority,
         args => ["-lambda", "authority", "true" | DistArgs]}),
     %% local calc module into Server (module does not exist on disk)
     Code = compile_code(calc_v1()),
-    {module, calc} = peer:apply(Server, code, load_binary, [calc, nofile, Code]),
-    {ok, StartedApps} = peer:apply(Server, application, ensure_all_started, [lambda]),
+    {module, calc} = peer:call(Server, code, load_binary, [calc, nofile, Code]),
+    {ok, StartedApps} = peer:call(Server, application, ensure_all_started, [lambda]),
     %% Server: publish calc
-    {ok, _Srv} = peer:apply(Server, lambda, publish, [calc, #{capacity => 3}]),
+    {ok, _Srv} = peer:call(Server, lambda, publish, [calc, #{capacity => 3}]),
     %% Client: discover calc (using epmd)
-    {ok, Client} = peer:start_link(#{connection => standard_io, node => peer:random_name(), args => DistArgs}),
-    {ok, StartedApps} = peer:apply(Client, application, ensure_all_started, [lambda]),
-    {ok, Plb} = peer:apply(Client, lambda, discover, [calc, #{capacity => 10}]),
+    {ok, Client} = peer:start_link(#{connection => standard_io, name => peer:random_name(), args => DistArgs}),
+    {ok, StartedApps} = peer:call(Client, application, ensure_all_started, [lambda]),
+    {ok, Plb} = peer:call(Client, lambda, discover, [calc, #{capacity => 10}]),
     %% Execute calc remotely (on the client)
-    ?assertEqual(3.14, peer:apply(Client, calc, pi, [2])),
+    ?assertEqual(3.14, peer:call(Client, calc, pi, [2])),
     %% continue with capacity expansion
     %% run another server with more capacity
-    {ok, Srv2} = peer:start_link(#{connection => standard_io, node => peer:random_name(), args => DistArgs}),
-    {ok, StartedApps} = peer:apply(Srv2, application, ensure_all_started, [lambda]),
-    {module, calc} = peer:apply(Srv2, code, load_binary, [calc, nofile, Code]),
-    {ok, _Srv2Srv} = peer:apply(Srv2, lambda, publish, [calc, #{capacity => 3}]),
+    {ok, Srv2} = peer:start_link(#{connection => standard_io, name => peer:random_name(), args => DistArgs}),
+    {ok, StartedApps} = peer:call(Srv2, application, ensure_all_started, [lambda]),
+    {module, calc} = peer:call(Srv2, code, load_binary, [calc, nofile, Code]),
+    {ok, _Srv2Srv} = peer:call(Srv2, lambda, publish, [calc, #{capacity => 3}]),
     %% wait for Client Plb to find new server and update capacity
     wait_capacity_change(Client, Plb),
     %% ensure that client got more capacity: originally 3, 1 request executed,
     %%  2 more left, and 3 more connected = total of 5
-    ?assertEqual(5, peer:apply(Client, lambda_plb, capacity, [Plb])),
+    ?assertEqual(5, peer:call(Client, lambda_plb, capacity, [Plb])),
     %% Shutdown
     lambda_async:pmap([{peer, stop, [S]} || S <- [Server, Srv2]]),
     wait_capacity_change(Client, Plb),
     %% Capacity goes down to zero
-    ?assertEqual(0, peer:apply(Client, lambda_plb, capacity, [Plb])),
+    ?assertEqual(0, peer:call(Client, lambda_plb, capacity, [Plb])),
     %% stop PLB, which should make 'calc' module unload
-    ok = peer:apply(Client, gen_server, stop, [Plb]),
-    ?assertEqual(non_existing, peer:apply(Client, code, which, [calc])).
+    ok = peer:call(Client, gen_server, stop, [Plb]),
+    ?assertEqual(non_existing, peer:call(Client, code, which, [calc])).
 
 remote_stateless_update() ->
     [{doc, "Update stateless code on a remote tier"}].
@@ -188,15 +186,15 @@ remote_stateless_update(Config) when is_list(Config) ->
     %% start authority and client nodes
     {AuthPeer, AuthNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, undefined, ["+S", "2:2"], true),
     %% make bootspec for the client & server
-    Addr = peer:apply(AuthPeer, lambda_discovery, get_node, []),
+    Addr = peer:call(AuthPeer, lambda_discovery, get_node, []),
     BootSpec = [{static, #{{lambda_authority, AuthNode} => Addr}}],
     {ClientPeer, _ClientNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec, ["+S", "2:2"], false),
     %% start server, doing v1 release, publishing calc
     {_ServerPeer, _ServerNode} = lambda_test:start_node_link(?FUNCTION_NAME, BootV1, BootSpec,
         ["+S", "2:2", "-lambda", "publish", "[calc]"], false),
     %% ensure it actually works...
-    {ok, _Plb} = peer:apply(ClientPeer, lambda, discover, [calc]),
-    ?assertEqual(3.14, peer:apply(ClientPeer, calc, pi, [2])),
+    {ok, _Plb} = peer:call(ClientPeer, lambda, discover, [calc]),
+    ?assertEqual(3.14, peer:call(ClientPeer, calc, pi, [2])),
 
     %% v2 release: pi gets faster for some cases
     Math2 = make_app(LibDir, math, "0.2.0", calc, calc_v1()),
@@ -211,7 +209,7 @@ remote_stateless_update(Config) when is_list(Config) ->
     %%
     %%?assertEqual(ok, systools:make_relup(BootV2, [BootV1], [], [{outdir, Root}])),
     %% do the relup
-    %%?assertEqual(ok, peer:apply(ServerPeer, release_handler, check_install_release, ["1.1.0"])),
+    %%?assertEqual(ok, peer:call(ServerPeer, release_handler, check_install_release, ["1.1.0"])),
     %% measure performance (which must be higher than before relup)
     ok.
 
@@ -229,8 +227,8 @@ remote_api_update(Config) when is_list(Config) ->
     {ClientPeer, _ClientNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec, ["+S", "2:2"], false),
     {_ServerPeer, _ServerNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec, ["+S", "2:2"], false),
     %% canary "calc" on the server
-    {ok, _Plb} = peer:apply(ClientPeer, lambda, discover, [calc]),
-    ?assertEqual(3.14, peer:apply(ClientPeer, calc, pi, [2])),
+    {ok, _Plb} = peer:call(ClientPeer, lambda, discover, [calc]),
+    ?assertEqual(3.14, peer:call(ClientPeer, calc, pi, [2])),
     ok.
 
 remote_canary() ->
@@ -267,10 +265,10 @@ version_demo(Config) when is_list(Config) ->
     ct:sleep(600),
     %% discover and ensure there is "where" but not "fqdn"
     {ok, Host} = inet:gethostname(),
-    ?assertEqual(Host, peer:apply(Client1, vdemo, where, [])),
-    ?assertException(error, undef, peer:apply(Client1, vdemo, fqdn, [])),
-    [{_, Plb, _, _}] = peer:apply(Client1, supervisor, which_children, [lambda_client_sup]),
-    InitialCapacity = peer:apply(Client1, lambda_plb, capacity, [Plb]),
+    ?assertEqual(Host, peer:call(Client1, vdemo, where, [])),
+    ?assertException(error, undef, peer:call(Client1, vdemo, fqdn, [])),
+    [{_, Plb, _, _}] = peer:call(Client1, supervisor, which_children, [lambda_client_sup]),
+    InitialCapacity = peer:call(Client1, lambda_plb, capacity, [Plb]),
 
     %% start client #2
     {Client2, _} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec,
@@ -285,8 +283,8 @@ version_demo(Config) when is_list(Config) ->
 
     ct:sleep(600),
     % ensure it actually has fqdn
-    ?assertEqual(Host ++ inet_db:res_option(domain), peer:apply(Client2, vdemo, fqdn, [])),
+    ?assertEqual(Host ++ inet_db:res_option(domain), peer:call(Client2, vdemo, fqdn, [])),
 
     %% bonus: check first client capacity, which should be higher now
-    NewCapacity = peer:apply(Client1, lambda_plb, capacity, [Plb]),
+    NewCapacity = peer:call(Client1, lambda_plb, capacity, [Plb]),
     ?assert(InitialCapacity < NewCapacity, {scale, InitialCapacity, NewCapacity}).

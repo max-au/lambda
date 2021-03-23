@@ -131,36 +131,34 @@ peer(Config) when is_list(Config) ->
     %%  the sake of isolation and "leave no trace" idea
     %% start first authority node, as we need to make a bootstrap of it
     Boot = proplists:get_value(boot, Config),
-    {AuthorityPeer, AuthorityNode} = lambda_test:start_node_link(undefined, Boot, undefined, [], true),
+    AuthorityNode = lambda_test:start_node_link(undefined, Boot, undefined, [], true),
     %% form the bootstrap
-    Addr = peer:apply(AuthorityPeer, lambda_discovery, get_node, []),
+    Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
     BootSpec = [{static, #{{lambda_authority, AuthorityNode} => Addr}}],
     %% start extra nodes
-    Peers = lambda_test:start_nodes(undefined, Boot, BootSpec, 4),
-    {Peers1, ExpectedWorkers} = lists:unzip(Peers),
+    ExpectedWorkers = lambda_test:start_nodes(undefined, Boot, BootSpec, 4),
     %% ensure they all find the authority
-    WorkerNodes = peer:apply(AuthorityPeer, erlang, nodes, []),
+    WorkerNodes = peer:call(AuthorityNode, erlang, nodes, []),
     ?assertEqual([], ExpectedWorkers -- WorkerNodes, "missing initial nodes"),
     ?assertEqual([], WorkerNodes -- ExpectedWorkers, "unexpected initial nodes"),
     %% start more nodes, don't give them authority addresses
-    NonAuth = lambda_test:start_nodes(undefined, Boot, BootSpec, 4),
-    {Peers2, NonAuthWN} = lists:unzip(NonAuth),
+    NonAuthWN = lambda_test:start_nodes(undefined, Boot, BootSpec, 4),
     %% verify there are 8 nodes connected to this authority
-    AllWorkerNodes = peer:apply(AuthorityPeer, erlang, nodes, []),
+    AllWorkerNodes = peer:call(AuthorityNode, erlang, nodes, []),
     ?assertEqual([], (ExpectedWorkers ++ NonAuthWN) -- AllWorkerNodes, "missing extra nodes"),
     ?assertEqual([], (AllWorkerNodes -- ExpectedWorkers) -- NonAuthWN, "unexpected extra nodes"),
     %% start a second authority
-    {SecondAuthPeer, SecondAuthNode} = lambda_test:start_node_link(undefined, Boot, BootSpec, [], true),
+    SecondAuthNode = lambda_test:start_node_link(undefined, Boot, BootSpec, [], true),
     %% flush all queues from all nodes
     ct:sleep(2000),
     %% verify both authorities have 9 connected nodes (8 non-authority)
-    AllNodes = peer:apply(AuthorityPeer, erlang, nodes, []) ++ [AuthorityNode],
-    AllNodes2 = peer:apply(SecondAuthPeer, erlang, nodes, []) ++ [SecondAuthNode],
+    AllNodes = peer:call(AuthorityNode, erlang, nodes, []) ++ [AuthorityNode],
+    AllNodes2 = peer:call(SecondAuthNode, erlang, nodes, []) ++ [SecondAuthNode],
     ?assertEqual(lists:sort(AllNodes), lists:sort(AllNodes2)),
     ?assertEqual(length(AllNodes), 10),
     %% ensure nodes are not mesh-connected
     Authorities = [AuthorityNode, SecondAuthNode],
-    [?assertEqual(Authorities, peer:apply(Peer, erlang, nodes, [])) || Peer <- Peers1 ++ Peers2],
+    [?assertEqual(Authorities, peer:call(Peer, erlang, nodes, [])) || Peer <- ExpectedWorkers ++ NonAuthWN],
     %% shut all down
-    [peer:stop(P) || P <- Peers1 ++ Peers2 ++ [AuthorityPeer, SecondAuthPeer]],
+    [peer:stop(P) || P <- ExpectedWorkers ++ NonAuthWN ++ [AuthorityNode, SecondAuthNode]],
     ok.

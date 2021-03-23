@@ -55,14 +55,13 @@ basic() ->
 basic(Config) when is_list(Config) ->
     %% start a peer with no epmd whatsoever, but make it listen
     %%  to a specific port
-    Node = peer:random_name(),
     CP = filename:dirname(code:which(lambda_discovery)),
-    {ok, Peer} = peer:start_link(#{node => Node, connection => standard_io,
+    {ok, Node} = peer:start_link(#{name => peer:random_name(), connection => standard_io,
         args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
     %% try to connect before adding the IP/Port to epmd, ensure failure
     false = net_kernel:connect_node(Node),
     %% now add the port/IP and ensure connection works
-    Addr = peer:apply(Peer, lambda_discovery, get_node, [Node]),
+    Addr = peer:call(Node, lambda_discovery, get_node, [Node]),
     ?assertNotEqual(error, Addr),
     ok = lambda_discovery:set_node(Node, Addr),
     true = net_kernel:connect_node(Node),
@@ -78,9 +77,9 @@ basic(Config) when is_list(Config) ->
     %% verify no connection
     false = net_kernel:connect_node(Node),
     %% add verify connection from the other side
-    ok = peer:apply(Peer, lambda_discovery, set_node, [node(), SelfAddr]),
-    true = peer:apply(Peer, net_kernel, connect_node, [node()]),
-    peer:stop(Peer).
+    ok = peer:call(Node, lambda_discovery, set_node, [node(), SelfAddr]),
+    true = peer:call(Node, net_kernel, connect_node, [node()]),
+    peer:stop(Node).
 
 formats() ->
     [{doc, "Tests bootspec formats (pid, node, epmd, ...)"}].
