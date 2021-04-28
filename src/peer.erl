@@ -53,6 +53,7 @@
     random_name/0,
     random_name/1,
 
+    get_node/1,
     get_state/1,
     wait_boot/2,
 
@@ -170,7 +171,7 @@ random_name() ->
 -spec random_name(Prefix :: string() | atom()) -> atom().
 random_name(Prefix) ->
     OsPid = os:getpid(),
-    Uniq = erlang:unique_integer(),
+    Uniq = abs(erlang:unique_integer()),
     list_to_atom(lists:concat([Prefix, "-", OsPid, "-", Uniq])).
 
 %% @doc Starts a distributed node with random name, on this host,
@@ -200,6 +201,11 @@ start(Options) ->
 -spec stop(dest()) -> ok.
 stop(Dest) ->
     gen_server:stop(Dest).
+
+%% @doc returns peer node name.
+-spec get_node(Dest :: dest()) -> node().
+get_node(Dest) ->
+    gen_server:call(Dest, get_node).
 
 %% @doc returns peer node state.
 -spec get_state(Dest :: dest()) -> peer_state().
@@ -254,6 +260,8 @@ send(Dest, To, Message) ->
 
 -record(peer_state, {
     options :: start_options(),
+    %% full node name, useful when process it not registered
+    node :: atom(),
     %% oob connection socket/port
     connection :: undefined | port() | gen_tcp:socket(),
     %% listening socket, while waiting for network OOB connection
@@ -302,10 +310,10 @@ init([Name, Options]) ->
 
     %% accept TCP connection if requested
     if ListenSocket =:= undefined ->
-            {ok, #peer_state{options = Options, connection = Conn}};
+            {ok, #peer_state{node = Name, options = Options, connection = Conn}};
         true ->
             prim_inet:async_accept(ListenSocket, ?ACCEPT_TIMEOUT),
-            {ok, #peer_state{options = Options, listen_socket = ListenSocket}}
+            {ok, #peer_state{node = Name, options = Options, listen_socket = ListenSocket}}
     end.
 
 %% not connected: no OOB connection available
@@ -329,6 +337,9 @@ handle_call(wait_boot, From, #peer_state{peer_state = booting, wait_boot = WB} =
     {noreply, State#peer_state{wait_boot = [From | WB]}};
 handle_call(wait_boot, _From, #peer_state{peer_state = Other} = State) when Other =:= down; Other =:= shutting_down ->
     {reply, Other, State};
+
+handle_call(get_node, _From, #peer_state{node = Node} = State) ->
+    {reply, Node, State};
 
 handle_call(get_state, _From, #peer_state{peer_state = PeerState} = State) ->
     {reply, PeerState, State}.

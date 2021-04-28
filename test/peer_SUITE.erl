@@ -137,8 +137,8 @@ dist_io_redirect() ->
 dist_io_redirect(Config) when is_list(Config) ->
     Name = lists:concat([?FUNCTION_NAME, "-", os:getpid()]),
     {ok, Host} = inet:gethostname(),
-    Node = list_to_atom(lists:concat([Name, "@", Host])),
-    {ok, Pid} = peer:start_link(#{name => Name, register => false}),
+    {ok, Pid} = peer:start_link(#{name => Name, host => Host, register => false}),
+    Node = peer:get_node(Pid),
     ct:capture_start(),
     rpc:call(Node, io, format, ["test."]),
     ?assertEqual(ok, peer:send(Pid, init, {stop, stop})),
