@@ -12,7 +12,8 @@
 
 %% Test cases exports
 -export([
-    basic/0, basic/1
+    basic/0, basic/1,
+    epmd_fallback/0, epmd_fallback/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -23,7 +24,7 @@ suite() ->
     [{timetrap, {seconds, 10}}].
 
 all() ->
-    [basic].
+    [basic, epmd_fallback].
 
 basic() ->
     [{doc, "Tests that get_node + set_node work together both directions"}].
@@ -57,3 +58,12 @@ basic(Config) when is_list(Config) ->
     ok = peer:call(One, lambda_discovery, set_node, [Two, TwoAddr]),
     true = peer:call(One, net_kernel, connect_node, [Two]),
     lambda_async:pmap([{peer, stop, [N]} || N <- [One, Two]]).
+
+epmd_fallback() ->
+    [{doc, "Tests epmd fallback"}].
+
+epmd_fallback(Config) when is_list(Config) ->
+    ?assertEqual(undefined, whereis(erl_epmd)),
+    {ok, Pid} = lambda_discovery:start_link(),
+    gen:stop(Pid),
+    ?assertEqual(undefined, whereis(erl_epmd)).

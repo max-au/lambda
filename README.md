@@ -29,9 +29,10 @@ pi(LastResult, Numerator, Denominator, Precision) ->
     end.
 ```
 
-Start an authority node:
+Start an authority node (note the convention, when a node is named `authority`,
+it starts `lambda_authority` by default):
 ```
-    ERL_FLAGS="-args_file config/shell.vm.args -lambda authority true" rebar3 shell --sname authority 
+    ERL_FLAGS="-args_file config/shell.vm.args" rebar3 shell --sname authority
 ```
 Compile `calc` and publish it with small capacity:
 ```
@@ -41,7 +42,8 @@ Compile `calc` and publish it with small capacity:
     (authority@max-au)2> lambda:publish(calc, #{capacity => 2}).
     ok
 ```
-Start another shell (note: `as test` makes `erlperf` available in the shell):
+Start another shell (note: `as test` makes `erlperf` available in the shell,
+you can omit it if you don't want `erlperf`):
 ```shell
     ERL_FLAGS="-args_file config/shell.vm.args" rebar3 as test shell --sname front
 ```
@@ -54,7 +56,7 @@ Discover `calc` and execute `pi(5)` remotely:
     6765.
     ok
 ```
-Use `erlperf` to verify maximum concurrency of 2: 
+Use `erlperf` to verify maximum concurrency of 2:
 ```
     (front@max-au)1> application:start(erlperf).
     ok

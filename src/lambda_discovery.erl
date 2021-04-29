@@ -6,7 +6,7 @@
 %% The release (or erl) should be started with "-epmd_module lambda_discovery".
 %%
 %% NOTE: release is expected to run with "-start_epmd false". If this parameter
-%%  is not supplied, lambda_discovery also starts original `epmd` module as
+%%  is not supplied, lambda_discovery also starts original `epmd' module as
 %%  a fallback.
 %% @end
 -module(lambda_discovery).
@@ -37,7 +37,8 @@
 -export([
     init/1,
     handle_call/3,
-    handle_cast/2
+    handle_cast/2,
+    terminate/2
 ]).
 
 -behaviour(gen_server).
@@ -197,6 +198,12 @@ address_please(Name, Host, AddressFamily) ->
 %% @private
 -spec init([]) -> {ok, state()}.
 init([]) ->
+    %% epmd fallback
+    epmd_fallback() andalso
+        begin
+            erl_epmd:start_link(),
+            process_flag(trap_exit, true) %% otherwise terminate/2 is not called
+        end,
     %% always populate the local node address
     try
         {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
@@ -233,6 +240,13 @@ handle_call({names, HostName}, _From, State) ->
     {reply, Nodes, State};
 
 handle_call({register, Name, PortNo, Family}, _From, State) ->
+    %% fallback, registering in epmd
+    epmd_fallback() andalso
+        try
+            {ok, _Creation} = erl_epmd:register_node(Name, PortNo, Family)
+        catch Class:Reason ->
+            ?LOG_ERROR("epmd fallback failed with ~s:~p", [Class, Reason], #{domain => [lambda]})
+        end,
     %% get the local hostname
     {ok, Host} = inet:gethostname(),
     Domain = case inet_db:res_option(domain) of [] -> []; D -> [$. | D] end,
@@ -247,8 +261,17 @@ handle_call({register, Name, PortNo, Family}, _From, State) ->
 handle_cast(_Cast, _State) ->
     error(badarg).
 
+%% @private
+-spec terminate(term(), state()) -> ok.
+terminate(_Reason, _State) ->
+    epmd_fallback() andalso gen:stop(erl_epmd),
+    ok.
+
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+epmd_fallback() ->
+    {ok, [["false"]]} =/= init:get_argument(start_epmd).
 
 local_addr(Host, Family) ->
     AddrLen = case Family of inet -> 4; inet6 -> 8 end,

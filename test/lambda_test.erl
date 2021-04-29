@@ -100,7 +100,7 @@ create_release(DestDir, RelApps, RelName, RelVsn) ->
 logger_config(Modules) ->
     Formatter = {logger_formatter,
         #{legacy_header => false, single_line => true,
-            template => [time, " ", node, " ", pid, " ", mfa, ":", line, " ", msg, "\n"]}
+            template => [time, " ", pid, " ", mfa, ":", line, " ", msg, "\n"]}
     },
     Filters = if Modules =:= [] -> #{}; true -> #{filters => [{module, {fun ?MODULE:filter_module/2, Modules}}]} end,
     LogCfg = [

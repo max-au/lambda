@@ -23,8 +23,9 @@ init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
     %% Lambda may run under a different supervision tree via included_applications
     App = case application:get_application() of {ok, A} -> A; undefined -> lambda end,
-    %% authority is not enabled by default
-    Authority = application:get_env(App, authority, false),
+    %% authority is not enabled by default, unless node name starts with `authority`
+    [Name, _] = string:lexemes(atom_to_list(node()), "@"),
+    Authority = application:get_env(App, authority, lists:prefix("authority", Name)),
     %% broker is enabled by default
     Broker = application:get_env(App, broker, true),
     %% Metrics (counters, gauges)

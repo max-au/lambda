@@ -101,7 +101,7 @@ terminate(_Reason, _State) ->
 
 handle_resolve(#lambda_bootstrap_state{spec = Spec, subscribers = Subs} = State) ->
     New = resolve(Spec),
-    ?LOG_DEBUG("resolved for ~200p into ~200p", [Subs, New], #{domain => [lambda]}),
+    ?LOG_DEBUG("resolved ~p for ~200p into ~200p", [Spec, Subs, New], #{domain => [lambda]}),
     %% notify subscribers of changes
     %% TODO: think how to avoid bootstrapping over and over
     Diff = New, %% maps:without(maps:keys(Prev), New),
@@ -167,10 +167,8 @@ resolve_epmd([Node | Tail], Family, Acc) when Node =:= node() ->
     resolve_epmd(Tail, Family, Acc#{{lambda_authority, Node} => lambda_discovery:get_node()});
 resolve_epmd([Node | Tail], Family, Acc) ->
     try
-        [Name, Host] = string:split(atom_to_list(Node), "@", all),
-        {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(Host, Family),
-        Port = resolve_port(Name, Ip),
-        resolve_epmd(Tail, Family, Acc#{{lambda_authority, Node} => {Ip, Port}})
+        {FullNode, Addr} = resolve_ip(string:split(atom_to_list(Node), "@", all), Family),
+        resolve_epmd(Tail, Family, Acc#{{lambda_authority, FullNode} => Addr})
     catch
         badmatch:noport ->
             %% node is not running, which isn't an error
@@ -179,6 +177,19 @@ resolve_epmd([Node | Tail], Family, Acc) ->
             ?LOG_DEBUG("failed to resolve ~s, ~s:~p~n~200p", [Node, Class, Reason, Stack], #{domain => [lambda]}),
             resolve_epmd(Tail, Family, Acc)
     end.
+
+-define (INET_LOCALHOST, {127, 0, 0, 1}).
+-define (INET6_LOCALHOST, {0, 0, 0, 0, 0, 0, 0, 1}).
+
+resolve_ip([Name], inet) ->
+    {ok, HostName} = inet:gethostname(),
+    {list_to_atom(lists:concat([Name, "@", HostName])), #{addr => ?INET_LOCALHOST, port => resolve_port(Name, ?INET_LOCALHOST)}};
+resolve_ip([Name], inet6) ->
+    {ok, HostName} = inet:gethostname(),
+    {list_to_atom(lists:concat([Name, "@", HostName])), #{addr => ?INET6_LOCALHOST, port => resolve_port(Name, ?INET6_LOCALHOST)}};
+resolve_ip([Name, Host], Family) ->
+    {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(Host, Family),
+    {list_to_atom(lists:concat([Name, "@", Host])), #{addr => Ip, port => resolve_port(Name, Ip)}}.
 
 resolve_port(Name, Ip) ->
     {port, Port, _Version} = erl_epmd:port_please(Name, Ip),
