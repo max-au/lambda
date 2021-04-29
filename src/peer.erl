@@ -873,9 +873,14 @@ io_server_loop(Kind, Port, Refs, Out) ->
             peer_to_origin(Kind, Port, {io_request, From, ReplyAs, Request}),
             io_server_loop(Kind, Port, Refs, Out);
         {Port, {data, Bytes}} when Kind =:= port ->
+            {Decoded, Used} = binary_to_term(Bytes, [used]),
             %% bytes received from Port, they can never be malformed,
             %%  but they can be somewhat scattered
-            handle_peer_oob(Kind, Port, binary_to_term(Bytes), Refs, Out);
+            Used < byte_size(Bytes) andalso begin
+                {_, Remaining} = split_binary(Bytes, Used),
+                self() ! {Port, {data, Remaining}} %% re-send back to the queue
+            end,
+            handle_peer_oob(Kind, Port, Decoded, Refs, Out);
         {Port, eof} when Kind =:= port ->
             %% stdin closed, if there is no active OOB, stop the node
             erlang:halt(1);
@@ -914,6 +919,7 @@ io_server_loop(Kind, Port, Refs, Out) ->
             io_server_loop(Kind, Port, Refs, Out);
         _Other ->
             %% below, what is it?
+            io:format("WTF: ~200p~n", [_Other]),
             io_server_loop(Kind, Port, Refs, Out)
     end.
 

@@ -8,8 +8,6 @@
 -export([
     sync/1,
     sync_via/2,
-    start_local/0,
-    end_local/0,
     create_release/1,
     create_release/4,
     logger_config/1,
@@ -54,33 +52,6 @@ sync_via({_Peer, Name}, Name) ->
     error(cycle);
 sync_via({Peer, Via}, Name) ->
     peer:call(Peer, sys, replace_state, [Via, fun (S) -> (catch sys:get_state(Name)), S end]).
-
-%% @doc Start lambda application locally (in this VM). Authority is local,
-%%      epmd replaced. Node is made distributed
--spec start_local() -> ok.
-start_local() ->
-    %% need to be alive. Using shortnames - this way it works
-    %%  even when there is no network connection
-    erlang:is_alive() orelse net_kernel:start([list_to_atom(lists:concat([?MODULE, "_", os:getpid()])), shortnames]),
-    %% configuration: local authority
-    _ = application:load(lambda),
-    %% "self-signed": node runs both authority and a broker
-    ok = application:set_env(lambda, authority, true),
-    %% lambda application. it does not have any dependencies other than compiler,
-    %%  so should "just start".
-    _ = application:start(compiler),
-    %% Note: this is deliberate decision, don't just change to "ensure_all_started".
-    ok = application:start(lambda).
-
-%% @doc Ends locally running lambda, restores epmd, unloads lambda app,
-%%      makes node non-distributed if it was allegedly started by us.
--spec end_local() -> ok.
-end_local() ->
-    ok = application:stop(lambda),
-    ok = application:unload(lambda),
-    %% don't care about compiler app left running
-    lists:prefix(?MODULE_STRING, atom_to_list(node())) andalso net_kernel:stop(),
-    ok.
 
 %% @doc Creates a boot script simulating OTP release. Recommended to use
 %%      with start_node_link or start_nodes. Returns boot script location.
@@ -131,10 +102,10 @@ logger_config(Modules) ->
         #{legacy_header => false, single_line => true,
             template => [time, " ", node, " ", pid, " ", mfa, ":", line, " ", msg, "\n"]}
     },
-    Filters = [{module, {fun ?MODULE:filter_module/2, Modules}}],
+    Filters = if Modules =:= [] -> #{}; true -> #{filters => [{module, {fun ?MODULE:filter_module/2, Modules}}]} end,
     LogCfg = [
         {handler, default, logger_std_h,
-            #{config => #{type => standard_error}, filters => Filters, formatter => Formatter}}],
+            Filters#{config => #{type => standard_error}, formatter => Formatter}}],
     ["-kernel", "logger", lists:flatten(io_lib:format("~10000tp", [LogCfg])), "-kernel", "logger_level", "all"].
 
 %% @doc Filter passing events only from a list of allowed modules, and only for lambda domain
@@ -189,7 +160,7 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
             "-pa", TestCP] ++ Auth ++ ExtraArgs ++ CmdLine}),
     %% wait for connection?
     case Bootspec of
-        [{static, Map}] when is_map(Map) ->
+        {static, Map} when is_map(Map) ->
             {_, BootNodes} = lists:unzip(maps:keys(Map)),
             ok = peer:call(Node, ?MODULE, wait_connection, [BootNodes]);
         _ ->

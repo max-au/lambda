@@ -21,22 +21,17 @@ init([]) ->
     %% all children can restart independently
     %% allow 2 restarts every 10 seconds
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
-    %% just in case: lambda may run under a different supervision tree
+    %% Lambda may run under a different supervision tree via included_applications
     App = case application:get_application() of {ok, A} -> A; undefined -> lambda end,
     %% authority is not enabled by default
     Authority = application:get_env(App, authority, false),
     %% broker is enabled by default
     Broker = application:get_env(App, broker, true),
-    %% Lambda discovery (epmd module, may be already used/installed via command line)
-    DiscoSpec = [
+    %% Metrics (counters, gauges)
+    MetricsSpec = [
         #{
             id => lambda_metrics,
             start => {lambda_metrics, start_link, []}
-        },
-        #{
-            id => lambda_discovery,
-            start => {lambda_discovery, start_link, []},
-            modules => [lambda_discovery]
         }
     ],
     %% Authority, when enabled
@@ -55,21 +50,15 @@ init([]) ->
         } || true <- [Broker]],
     %% Bootstrap subscribers (authority & broker, if enabled)
     Subscribers = [lambda_authority || true <- [Authority]] ++ [lambda_broker || true <- [Broker]],
-    %% Bootstrap processes supervised by Lambda
-    %% By default, if authority is running, bootstrap points to it, otherwise,
-    %%  bootstrap points to 'authority' node at local host.
-    DefaultBoot = if Authority -> node();
-                      true ->
-                          {ok, Host} = inet:gethostname(),
-                          list_to_atom(lists:concat(["authority", "@", Host, domain(net_kernel:longnames())]))
-                  end,
-    DynBoot = application:get_env(App, bootspec, [{epmd, [DefaultBoot]}]),
+    %% Bootstrap processes supervised by Lambda, by default there is no bootspec
+    %%  at all, initial bootstrap comes from configuration or via an API.
+    DynBoot = application:get_env(App, bootspec, {epmd, [node()]}),
     BootSpec = [
         #{
             id => lambda_bootstrap,
-            start => {lambda_bootstrap, start_link, [Subscribers, Dyn]},
+            start => {lambda_bootstrap, start_link, [Subscribers, DynBoot]},
             modules => [lambda_bootstrap]
-        } || Dyn <- DynBoot],
+        }],
 
     %% Supervisors for statically published listener/plb modules
     %% take children list from configuration (hosted deployment)
@@ -89,7 +78,7 @@ init([]) ->
             modules => [lambda_client_sup]
         }
     ],
-    {ok, {SupFlags, DiscoSpec ++ AuthoritySpec ++ BrokerSpec ++ BootSpec ++ ModSup}}.
+    {ok, {SupFlags, MetricsSpec ++ AuthoritySpec ++ BrokerSpec ++ BootSpec ++ ModSup}}.
 
 
 %%--------------------------------------------------------------------
@@ -113,14 +102,3 @@ check_plb_mod({Mod, Options}) when is_atom(Mod), is_map(Options) ->
     {Mod, Options#{capacity => maps:get(capacity, Options, 10)}};
 check_plb_mod(Other) ->
     erlang:error({invalid_module_spec, Other}).
-
-domain(true) ->
-    domain(inet_db:res_option(domain));
-domain(ignored) ->
-    domain(inet_db:res_option(domain));
-domain(false) ->
-    "";
-domain([]) ->
-    "";
-domain(Domain) ->
-    [$. | Domain].

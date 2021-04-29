@@ -245,9 +245,9 @@ ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->
             {[New], State#lambda_authority_state{exchanges = Exch#{Module => {New, []}}}}
     end.
 
-peer_addr({Addr, Port}) when is_tuple(Addr), is_integer(Port), Port > 0, Port < 65536 ->
+peer_addr(#{addr := Addr, port := Port}) when is_tuple(Addr), is_integer(Port), Port > 0, Port < 65536 ->
     {Addr, Port};
-peer_addr({Node, Port}) when is_atom(Node), is_integer(Port), Port > 0, Port < 65536 ->
+peer_addr(#{node := Node, port := Port}) when is_atom(Node), is_integer(Port), Port > 0, Port < 65536 ->
     Socket = ets:lookup_element(sys_dist, Node, 6),
     {ok, {Ip, _EphemeralPort}} = inet:peername(Socket), %% TODO: TLS support
     case Ip of

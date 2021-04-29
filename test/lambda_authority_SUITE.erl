@@ -56,7 +56,7 @@ start_tier(TestId, Boot, Count, AuthorityCount, ServiceLocator) when Count >= Au
     lambda_async:pmap([
         fun () ->
             Auth = Seq =< AuthorityCount,
-            Node = lambda_test:start_node(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], Auth),
+            Node = lambda_test:start_node(TestId, Boot, {file, ServiceLocator}, ["+S", "2:2"], Auth),
             {Node, Auth}
         end
         || Seq <- lists:seq(1, Count)]).
@@ -189,12 +189,12 @@ prop_self_healing(Boot, SL) ->
     ).
 
 start_authority(TestId, Boot, ServiceLocator) ->
-    lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], true).
+    lambda_test:start_node_link(TestId, Boot, {file, ServiceLocator}, ["+S", "2:2"], true).
     %% use lambda_test:logger_config for reading extra nodes logger output
     %% ++ lambda_test:logger_config([lambda_broker, lambda_bootstrap, lambda_authority]), true).
 
 start_broker(TestId, Boot, ServiceLocator) ->
-    lambda_test:start_node_link(TestId, Boot, [{file, ServiceLocator}], ["+S", "2:2"], false).
+    lambda_test:start_node_link(TestId, Boot, {file, ServiceLocator}, ["+S", "2:2"], false).
 
 connect(Peer1, Node2) ->
     peer:call(Peer1, net_kernel, connect_node, [Node2]).

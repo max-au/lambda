@@ -59,6 +59,12 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
+init_per_group(remote, Config) ->
+    %% check that SSH can connect to localhost, skip the test if not
+    case os:cmd("ssh localhost echo ok") of
+        "ok\n" -> Config;
+        _ -> {skip, "'ssh localhost echo ok' did not return ok"}
+    end;
 init_per_group(dist, Config) ->
     case erlang:is_alive() of
         true ->

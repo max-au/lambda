@@ -110,7 +110,7 @@ make_app(Priv, Name, Vsn, Mod, Code) ->
 start_auth(TestCase, Boot) ->
     {AuthPeer, AuthNode} = lambda_test:start_node_link(TestCase, Boot, undefined, ["+S", "2:2"], true),
     Addr = peer:call(AuthPeer, lambda_discovery, get_node, []),
-    BootSpec = [{static, #{{lambda_authority, AuthNode} => Addr}}],
+    BootSpec = {static, #{{lambda_authority, AuthNode} => Addr}},
     {AuthPeer, AuthNode, BootSpec}.
 
 wait_capacity_change(_Client, _Plb) ->
@@ -125,10 +125,13 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     {ok, Host} = inet:gethostname(),
-    DistArgs = dist_args(Host),
+    VmArgs = dist_args(Host) ++ ["-epmd_module", "lambda_discovery", "-pa", code:which(?MODULE), "-start_epmd", "false"]
+        ++ [], %% lambda_test:logger_config([lambda_broker, lambda_bootstrap, lambda_authority]),
     %% Prefer longnames (for 'peer' does it too)
     {ok, Server} = peer:start_link(#{connection => standard_io, name => authority,
-        args => ["-lambda", "authority", "true" | DistArgs]}),
+        args => ["-lambda", "authority", "true" | VmArgs]}),
+    AuthBoot = {static, #{{lambda_authority, Server} => peer:call(Server, lambda_discovery, get_node, [])}},
+    AuthBootArgs = ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [AuthBoot]))],
     %% local calc module into Server (module does not exist on disk)
     Code = compile_code(calc_v1()),
     {module, calc} = peer:call(Server, code, load_binary, [calc, nofile, Code]),
@@ -136,14 +139,14 @@ basic(Config) when is_list(Config) ->
     %% Server: publish calc
     {ok, _Srv} = peer:call(Server, lambda, publish, [calc, #{capacity => 3}]),
     %% Client: discover calc (using epmd)
-    {ok, Client} = peer:start_link(#{connection => standard_io, name => peer:random_name(), args => DistArgs}),
+    {ok, Client} = peer:start_link(#{connection => standard_io, name => peer:random_name(), args => VmArgs ++ AuthBootArgs}),
     {ok, StartedApps} = peer:call(Client, application, ensure_all_started, [lambda]),
     {ok, Plb} = peer:call(Client, lambda, discover, [calc, #{capacity => 10}]),
     %% Execute calc remotely (on the client)
     ?assertEqual(3.14, peer:call(Client, calc, pi, [2])),
     %% continue with capacity expansion
     %% run another server with more capacity
-    {ok, Srv2} = peer:start_link(#{connection => standard_io, name => peer:random_name(), args => DistArgs}),
+    {ok, Srv2} = peer:start_link(#{connection => standard_io, name => peer:random_name(), args => VmArgs ++ AuthBootArgs}),
     {ok, StartedApps} = peer:call(Srv2, application, ensure_all_started, [lambda]),
     {module, calc} = peer:call(Srv2, code, load_binary, [calc, nofile, Code]),
     {ok, _Srv2Srv} = peer:call(Srv2, lambda, publish, [calc, #{capacity => 3}]),
@@ -187,7 +190,7 @@ remote_stateless_update(Config) when is_list(Config) ->
     {AuthPeer, AuthNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, undefined, ["+S", "2:2"], true),
     %% make bootspec for the client & server
     Addr = peer:call(AuthPeer, lambda_discovery, get_node, []),
-    BootSpec = [{static, #{{lambda_authority, AuthNode} => Addr}}],
+    BootSpec = {static, #{{lambda_authority, AuthNode} => Addr}},
     {ClientPeer, _ClientNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec, ["+S", "2:2"], false),
     %% start server, doing v1 release, publishing calc
     {_ServerPeer, _ServerNode} = lambda_test:start_node_link(?FUNCTION_NAME, BootV1, BootSpec,

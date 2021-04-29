@@ -23,6 +23,12 @@
     throughput/0, throughput/1
 ]).
 
+%% Exports for spawned (peer) node
+-export([
+    call_fail_test/1,
+    lb_test/4
+]).
+
 %% Should not be exported in the future
 -export([
     pi/1,
@@ -43,21 +49,30 @@ all() ->
     [lb, fail_capacity_wait, call_fail]. %% , packet_loss].
 
 init_per_suite(Config) ->
-    ok = lambda_test:start_local(),
+    %% start an authority (which is also client node) running this test case code
     Boot = lambda_test:create_release(proplists:get_value(priv_dir, Config)),
-    [{boot, Boot} | Config].
+    Auth = lambda_test:start_node(?MODULE, Boot, undefined,
+        [],
+        true),
+    unlink(whereis(Auth)), %% otherwise Auth node exits immediately
+    [{boot, Boot}, {auth, Auth} | Config].
 
 end_per_suite(Config) ->
-    lambda_test:end_local(),
+    peer:stop(proplists:get_value(auth, Config)),
     Config.
 
+init_per_testcase(fail_capacity_wait, Config) ->
+    %% not using extra client node, this test is local
+    Config;
 init_per_testcase(_TestCase, Config) ->
-    {ok, Lb} = lambda_plb:start_link(lambda_broker, ?MODULE, #{capacity => 1000, compile => false}),
+    Auth = proplists:get_value(auth, Config),
+    {ok, Lb} = peer:call(Auth, lambda_plb, start_link, [lambda_broker, ?MODULE, #{capacity => 1000, compile => false}]),
     [{lb, Lb} | Config].
 
 end_per_testcase(_TestCase, Config) ->
+    %% stop the PLB started for this testcase
     proplists:get_value(lb, Config) =/= undefined andalso
-        gen_server:stop(proplists:get_value(lb, Config)),
+        peer:call(proplists:get_value(auth, Config), gen_server, stop, [proplists:get_value(lb, Config)]),
     proplists:delete(lb, Config).
 
 %%--------------------------------------------------------------------
@@ -94,8 +109,8 @@ multi_echo(Count) ->
     lambda_plb:call(?MODULE, echo, [[]], infinity),
     multi_echo(Count - 1).
 
-make_node(Boot, Args, Capacity) ->
-    Bootstrap = [{static, #{{lambda_authority, node()} => lambda_discovery:get_node()}}],
+make_node(Auth, Boot, Args, Capacity) ->
+    Bootstrap = {static, #{{lambda_authority, Auth} => peer:call(Auth, lambda_discovery, get_node, [])}},
     Node = lambda_test:start_node(undefined, Boot, Bootstrap, Args, false),
     {ok, Worker} = peer:call(Node, lambda, publish, [?MODULE, #{capacity => Capacity}]),
     {Node, Worker}.
@@ -106,9 +121,7 @@ wait_complete(Procs) when Procs =:= #{} ->
     ok;
 wait_complete(Procs) ->
     receive
-        {'DOWN', _MRef, process, Pid, Reason} ->
-            Reason =/= normal andalso
-                ct:pal("~p: wait error: ~p", [Pid, Reason]),
+        {'DOWN', _MRef, process, Pid, _Reason} ->
             wait_complete(maps:remove(Pid, Procs))
     end.
 
@@ -118,6 +131,14 @@ wait_complete(Procs) ->
 lb() ->
     [{doc, "Tests weighted load balancer"}].
 
+lb_test(Precalculated, Precision, SampleCount, ClientConcurrency) ->
+    Spawned = [spawn_monitor(
+        fun () -> [Precalculated = lambda_plb:call(?MODULE, pi, [Precision], infinity)
+            || _ <- lists:seq(1, SampleCount div ClientConcurrency)]
+        end)
+        || _ <- lists:seq(1, ClientConcurrency)],
+    ok = wait_complete(Spawned).
+
 lb(Config) when is_list(Config) ->
     WorkerCount = 4,
     SampleCount = 1000,
@@ -125,9 +146,10 @@ lb(Config) when is_list(Config) ->
     ClientConcurrency = 100,
     ?assertEqual(0, SampleCount rem ClientConcurrency),
     Boot = proplists:get_value(boot, Config),
+    Auth = proplists:get_value(auth, Config),
     %% start worker nodes, when every next node has +1 more capacity
     WorkIds = lists:seq(1, WorkerCount),
-    Nodes = lambda_async:pmap([{fun make_node/3, [Boot, ["+S", integer_to_list(Seq)], Seq]}
+    Nodes = lambda_async:pmap([{fun make_node/4, [Auth, Boot, ["+S", integer_to_list(Seq)], Seq]}
         || Seq <- WorkIds]),
     %% check peers scheduler counts
     WorkIds = lambda_async:pmap([{peer, call, [N, erlang, system_info, [schedulers]]} || {N, _} <- Nodes]),
@@ -135,12 +157,7 @@ lb(Config) when is_list(Config) ->
     Precalculated = pi(Precision),
     %% don't care about capacity waiting! this it the WHOLE IDEA!
     %% fire samples: spawn a process per request
-    Spawned = [spawn_monitor(
-        fun () -> [Precalculated = lambda_plb:call(?MODULE, pi, [Precision], infinity)
-            || _ <- lists:seq(1, SampleCount div ClientConcurrency)]
-        end)
-        || _ <- lists:seq(1, ClientConcurrency)],
-    ok = wait_complete(Spawned),
+    ok = peer:call(Auth, ?MODULE, lb_test, [Precalculated, Precision, SampleCount, ClientConcurrency]),
     %% ensure weights and total counts expected
     TotalWeight = WorkerCount * (WorkerCount + 1) div 2,
     {WorkerCount, WeightedCounts} = lists:foldl(
@@ -170,11 +187,17 @@ fail_capacity_wait(Config) when is_list(Config) ->
     Delay = 200,
     %% start both client & server locally (also verifies that it's possible - and there
     %%  are no registered names clashes)
+    {ok, Disco} = lambda_discovery:start_link(),
+    {ok, Auth} = lambda_authority:start_link(),
+    {ok, Broker} = lambda_broker:start_link(),
+    lambda_broker:authorities(Broker, #{Auth => undefined}),
     {ok, Worker} = lambda_listener:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
+    %% client
+    {ok, Plb} = lambda_plb:start_link(Broker, ?MODULE, #{capacity => 1000, compile => false}),
     %% spawn just enough requests to exhaust tokens
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, sleep, [Delay], infinity) end)
         || _ <- lists:seq(1, Concurrency)],
-    %% mut wait until spawned processes at least requested once
+    %% must wait until spawned processes at least requested once
     %% TODO: make it be reliable, not just a sleep
     ct:sleep(10),
     %% spawn and kill another batch - so tokens are sent to dead processes
@@ -192,6 +215,8 @@ fail_capacity_wait(Config) when is_list(Config) ->
     Actual = erlang:convert_time_unit(erlang:monotonic_time() - Started, native, millisecond),
     %% ensure all requests were processed (and none of dead requests)
     ?assertEqual({0, Concurrency * 2}, gen_server:call(Worker, get_count)),
+    %% stop servers
+    [gen:stop(Srv) || Srv <- [Plb, Worker, Broker, Auth, Disco]],
     %% ensure Actual time is at least as Expected, but no more than double of it
     ?assert(Actual >= Delay, {actual, Actual, minimum, Delay}),
     ?assert(Actual =< 2 * Delay, {actual, Actual, maximum, Delay * 2}).
@@ -199,14 +224,18 @@ fail_capacity_wait(Config) when is_list(Config) ->
 call_fail() ->
     [{doc, "Ensure failing calls do not exhaust pool"}].
 
-call_fail(Config) when is_list(Config) ->
-    Concurrency = 5,
+call_fail_test(Concurrency) ->
     {ok, Worker} = lambda_listener:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     Spawned = [spawn_monitor(fun () -> lambda_plb:call(?MODULE, exit, [kill], infinity) end)
         || _ <- lists:seq(1, Concurrency * 5)],
     wait_complete(Spawned),
     %% ensure all requests were processed
-    ?assertEqual({0, Concurrency * 5}, gen_server:call(Worker, get_count)).
+    gen_server:call(Worker, get_count).
+
+call_fail(Config) when is_list(Config) ->
+    Concurrency = 5,
+    Count = peer:call(proplists:get_value(auth, Config), ?MODULE, call_fail_test, [Concurrency]),
+    ?assertEqual({0, Concurrency * 5}, Count).
 
 packet_loss() ->
     [{doc, "Delibrately drops tokens, ensuring that processing does not stop"}].
@@ -242,13 +271,14 @@ throughput(Config) when is_list(Config) ->
     Lb = proplists:get_value(lb, Config),
     Broker = proplists:get_value(broker, Config),
     Boot = proplists:get_value(boot, Config),
+    Auth = proplists:get_value(auth, Config),
     sys:replace_state(Lb, fun(S) -> erlang:process_flag(priority, high), S end),
     %% start servers
-    [measure(Boot, Lb, Broker, CapPerNode, Nodes) || CapPerNode <- [100, 200, 500, 1000], Nodes <- [1, 2, 4, 8, 32, 64, 128]].
+    [measure(Auth, Boot, Lb, Broker, CapPerNode, Nodes) || CapPerNode <- [100, 200, 500, 1000], Nodes <- [1, 2, 4, 8, 32, 64, 128]].
 
-measure(Boot, Lb, Broker, CapPerNode, Nodes) ->
+measure(Auth, Boot, Lb, Broker, CapPerNode, Nodes) ->
     %% remotely:
-    {Node, Peer, Worker, CapPerNode} = make_node(Boot, [], CapPerNode),
+    {Node, Peer, Worker, CapPerNode} = make_node(Auth, Boot, [], CapPerNode),
     Workers = [begin {ok, W} = rpc:call(Node, lambda_listener, start, [?MODULE, CapPerNode]), W end
         || _ <- lists:seq(1, Nodes - 1)],
     %% ensure expected capacity achieved

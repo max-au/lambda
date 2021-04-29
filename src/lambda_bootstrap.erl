@@ -181,10 +181,5 @@ resolve_epmd([Node | Tail], Family, Acc) ->
     end.
 
 resolve_port(Name, Ip) ->
-    {port, Port, _Version} =
-        try erl_epmd:port_please(Name, Ip)
-        catch error:undef ->
-            %% the "original" module is created dynamically in runtime
-            AntiDialyzer = list_to_atom("erl_epmd_ORIGINAL"),
-            AntiDialyzer:port_please(Name, Ip) end,
+    {port, Port, _Version} = erl_epmd:port_please(Name, Ip),
     Port.

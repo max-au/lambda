@@ -1,6 +1,6 @@
 {application, lambda,
     [{description, "Lambda: Computing Service for Erlang"},
-        {vsn, "0.1.1"},
+        {vsn, "0.1.2"},
         {registered, [lambda_sup, lambda_bootstrap, lambda_authority, lambda_broker, lambda_discovery, lambda_metrics, lambda_client_sup, lambda_listener_sup]},
         {mod, {lambda_app, []}},
         {applications,

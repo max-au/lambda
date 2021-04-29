@@ -7,82 +7,53 @@
 %% Test server callbacks
 -export([
     suite/0,
-    all/0,
-    init_per_suite/1,
-    end_per_suite/1
+    all/0
 ]).
 
 %% Test cases exports
 -export([
-    basic/0, basic/1,
-    formats/0, formats/1
+    basic/0, basic/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
 
+-behaviour(ct_suite).
+
 suite() ->
-    [{timetrap, {seconds, 5}}].
+    [{timetrap, {seconds, 10}}].
 
 all() ->
-    [basic, formats].
-
-init_per_suite(Config) ->
-    {ok, Disco} = lambda_discovery:start_link(),
-    unlink(Disco),
-    Config1 = [{disco, Disco} | Config],
-    case erlang:is_alive() of
-        true ->
-            Config1;
-        false ->
-            {ok, Pid} = net_kernel:start([list_to_atom(lists:concat([?MODULE, "_", os:getpid()])), shortnames]),
-            [{net_kernel, Pid} | Config1]
-    end.
-
-end_per_suite(Config) ->
-    gen:stop(proplists:get_value(disco, Config)),
-    Config1 = proplists:delete(disco, Config),
-    case proplists:get_value(net_kernel, Config1) of
-        undefined ->
-            Config1;
-        Pid when is_pid(Pid) ->
-            net_kernel:stop(),
-            lists:delete(net_kernel, Config1)
-    end.
+    [basic].
 
 basic() ->
     [{doc, "Tests that get_node + set_node work together both directions"}].
 
 basic(Config) when is_list(Config) ->
-    %% start a peer with no epmd whatsoever, but make it listen
-    %%  to a specific port
+    %% start two peers and connect them
     CP = filename:dirname(code:which(lambda_discovery)),
-    {ok, Node} = peer:start_link(#{name => peer:random_name(), connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+    %% don't pmap, or linked nodes will die
+    [{ok, One}, {ok, Two}] = [
+        peer:start_link(#{name => peer:random_name(), connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}) || _ <- lists:seq(1, 2)],
     %% try to connect before adding the IP/Port to epmd, ensure failure
-    false = net_kernel:connect_node(Node),
+    ?assertNot(peer:call(One, net_kernel, connect_node, [Two])),
     %% now add the port/IP and ensure connection works
-    Addr = peer:call(Node, lambda_discovery, get_node, [Node]),
-    ?assertNotEqual(error, Addr),
-    ok = lambda_discovery:set_node(Node, Addr),
-    true = net_kernel:connect_node(Node),
+    AddrOne = peer:call(One, lambda_discovery, get_node, [One]),
+    ?assertNotEqual(error, AddrOne),
+    ok = peer:call(Two, lambda_discovery, set_node, [One, AddrOne]),
+    true = peer:call(Two, net_kernel, connect_node, [One]),
     %% testing reverse access (IP address taken from connection)
-    {_, ListenPort} = lambda_discovery:get_node(),
-    %% figure out what the peer has connected to
-    SelfPort = rpc:call(Node, ets, lookup_element, [sys_dist, node(), 6]),
-    {ok, {Ip, _EphemeralPort}} = rpc:call(Node, inet, peername, [SelfPort]),
-    SelfAddr = {Ip, ListenPort},
+    #{port := ListenPort} = peer:call(Two, lambda_discovery, get_node, []),
+    %% figure out what the peer has connected to, WARNING: system internals exposed!
+    TwoPort = peer:call(One, ets, lookup_element, [sys_dist, Two, 6]),
+    {ok, {Ip, _EphemeralPort}} = peer:call(One, inet, peername, [TwoPort]),
+    TwoAddr = #{addr => Ip, port => ListenPort},
     %% disconnect, remove mapping
-    true = net_kernel:disconnect(Node),
-    ok = lambda_discovery:del_node(Node),
+    true = peer:call(Two, net_kernel, disconnect, [One]),
+    ok = peer:call(Two, lambda_discovery, del_node, [One]),
     %% verify no connection
-    false = net_kernel:connect_node(Node),
+    ?assertNot(peer:call(One, net_kernel, connect_node, [Two])),
     %% add verify connection from the other side
-    ok = peer:call(Node, lambda_discovery, set_node, [node(), SelfAddr]),
-    true = peer:call(Node, net_kernel, connect_node, [node()]),
-    peer:stop(Node).
-
-formats() ->
-    [{doc, "Tests bootspec formats (pid, node, epmd, ...)"}].
-
-formats(Config) when is_list(Config) ->
-    ok.
+    ok = peer:call(One, lambda_discovery, set_node, [Two, TwoAddr]),
+    true = peer:call(One, net_kernel, connect_node, [Two]),
+    lambda_async:pmap([{peer, stop, [N]} || N <- [One, Two]]).

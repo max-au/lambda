@@ -2,9 +2,16 @@
 %% Lambda discovery: a way to inject external node name address resolution
 %%  into Erlang distribution.
 %% Implements a simple mapping, exposed via EPMD API.
+%%
+%% The release (or erl) should be started with "-epmd_module lambda_discovery".
+%%
+%% NOTE: release is expected to run with "-start_epmd false". If this parameter
+%%  is not supplied, lambda_discovery also starts original `epmd` module as
+%%  a fallback.
 %% @end
 -module(lambda_discovery).
 -author("maximfca@gmail.com").
+-compile(warn_missing_spec).
 
 %% API
 -export([
@@ -15,6 +22,7 @@
 ]).
 
 %% Callbacks required for epmd module implementation
+%% Not intended to be used by developers, it is only for OTP kernel application!
 -export([
     start_link/0,
     names/1,
@@ -29,8 +37,7 @@
 -export([
     init/1,
     handle_call/3,
-    handle_cast/2,
-    terminate/2
+    handle_cast/2
 ]).
 
 -behaviour(gen_server).
@@ -43,13 +50,20 @@
 
 %% Full set of information needed to establish network connection
 %%  to a specific host, with no external services required.
-%% TODO: extend to add TLS support
--type address() :: {inet:ip_address(), inet:port_number()}.
+%% TODO: add TLS support fields (protocol, CA certs, key, cert)
+-type address() :: #{
+    addr := inet:ip_address(),
+    port := inet:port_number(),
+    family => inet | inet6
+}.
 
 %% Process location (similar to emgr_name()). Process ID (pid)
 %%  designates both node name and ID. If process ID is not known,
 %%  locally registered process name can be used.
 -type location() :: pid() | {atom(), node()}.
+
+%% Internally, hostname can be atom, string, or IP address.
+-type hostname() :: atom() | string() | inet:ip_address().
 
 -export_type([address/0, location/0]).
 
@@ -58,12 +72,7 @@
 %%  epmd interface.
 -spec start_link() -> {ok, pid()} | ignore | {error,term()}.
 start_link() ->
-    case is_replaced() of
-        true ->
-            ignore;
-        false ->
-            gen_server:start_link({local, ?MODULE}, ?MODULE, [], [])
-    end.
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc Sets the mapping between node name and address to access the node.
 -spec set_node(node() | location(), address()) -> ok.
@@ -74,7 +83,7 @@ set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
 set_node(Node, _Address) when Node =:= node() ->
     %% ignore attempts to set this node address
     ok;
-set_node(Node, {_Ip, _Port} = Address) ->
+set_node(Node, #{addr := _Ip, port := _Port} = Address) ->
     gen_server:call(?MODULE, {set, Node, Address}).
 
 %% @doc Removes the node name from the map. Does nothing if node was never added.
@@ -118,7 +127,16 @@ port_please(_Name, _Host, _Timeout) ->
     Reason :: address | file:posix().
 
 names(HostName) ->
-    gen_server:call(?MODULE, {names, HostName}).
+    try gen_server:call(?MODULE, {names, HostName})
+    catch
+        exit:{noproc, _} ->
+            %% this code is necessary for `rebar3 shell` to work with vm.args that
+            %%  specify lambda_discovery as -epmd_module. Rebar starts distribution
+            %%  dynamically, after checking that epmd is running, but it does not
+            %%  understand that epmd may not even be needed. This should be fixed
+            %%  in rebar3 at some point.
+            {error, {?MODULE, not_running}}
+    end.
 
 -spec register_node(Name, Port) -> Result when
     Name :: string(),
@@ -145,7 +163,7 @@ register_node(Name, PortNo, Family) ->
 
 -spec listen_port_please(Name, Host) -> {ok, Port} when
     Name :: atom() | string(),
-    Host :: atom() | string() | inet:ip_address(),
+    Host :: hostname(),
     Port :: non_neg_integer().
 listen_port_please(_Name, _Host) ->
     {ok, 0}.
@@ -160,9 +178,9 @@ listen_port_please(_Name, _Host) ->
 
 address_please(Name, Host, AddressFamily) ->
     case get_node(make_node(Name, Host)) of
-        {Addr, Port} when AddressFamily =:= inet, tuple_size(Addr) =:= 4 ->
+        #{addr := Addr, port := Port} when AddressFamily =:= inet, tuple_size(Addr) =:= 4 ->
             {ok, Addr, Port, ?EPMD_VERSION};
-        {Addr, Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
+        #{addr := Addr, port := Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
             {ok, Addr, Port, ?EPMD_VERSION};
         error ->
             {error, not_found}
@@ -174,32 +192,28 @@ address_please(Name, Host, AddressFamily) ->
 %% Discovery state: maps node names to addresses.
 %% Current limitation: a node can only have a single address,
 %%  either IPv4 or IPv6.
--type state() :: #{node() => lambda_discovery:address()}.
+-type state() :: #{node() => address()}.
 
+%% @private
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    is_replaced() orelse
-        begin
-            %% Hot code load erl_epmd to replace address_please/3.
-            true = code:unstick_mod(erl_epmd),
-            rename(erl_epmd, erl_epmd_ORIGINAL),
-            copy(lambda_discovery, erl_epmd),
-            true = code:stick_mod(erl_epmd),
-            false = code:purge(erl_epmd)
-        end,
-    %% need to trap exit for terminate/2 to be called
-    erlang:process_flag(trap_exit, true),
     %% always populate the local node address
     try
         {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
             [{listen, _Port, _Proc, {net_address, {_Ip, Port}, HostName, _Proto, Fam}, _Mod}],
             _, _, _, _, _} = sys:get_state(net_kernel),
-        {ok, #{node() => {local_addr(HostName, Fam), Port}}}
+        {ok, #{node() => #{addr => local_addr(HostName, Fam), port => Port}}}
     catch
         _:_ ->
             {ok, #{node() => not_distributed}}
     end.
 
+%% @private
+-spec handle_call(
+    {set, node(), address()} |
+    {del, node()} | {get, node()} |
+    {names, hostname()} |
+    {register, string(), inet:port_number(), inet | inet6}, {pid(), reference()}, state()) -> {reply, term(), state()}.
 handle_call({set, Node, Address}, _From, State) ->
     ?LOG_DEBUG("set ~s to ~200p", [Node, Address], #{domain => [lambda]}),
     {reply, ok, State#{Node => Address}};
@@ -208,13 +222,14 @@ handle_call({del, Node}, _From, State) ->
     {reply, ok, maps:remove(Node, State)};
 
 handle_call({get, Node}, _From, State) ->
-    ?LOG_DEBUG("asking for ~s (~200p)", [case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, State, error)], #{domain => [lambda]}),
+    ?LOG_DEBUG("~p asking for ~s (~200p)", [element(1, _From),
+        case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, State, error)], #{domain => [lambda]}),
     {reply, maps:get(Node, State, error), State};
 
 handle_call({names, HostName}, _From, State) ->
     %% find all Nodes of a HostName - need to iterate the entire node
     %%  map. This is a very rare request, so can be slow
-    Nodes = lists:filter(fun (Full) -> tl(string:lexemes(Full, "@")) =:= HostName end, maps:keys(State)),
+    Nodes = lists:filter(fun (Full) -> tl(string:lexemes(atom_to_list(Full), "@")) =:= HostName end, maps:keys(State)),
     {reply, Nodes, State};
 
 handle_call({register, Name, PortNo, Family}, _From, State) ->
@@ -225,49 +240,15 @@ handle_call({register, Name, PortNo, Family}, _From, State) ->
     Short = make_node(Name, Host),
     Addr = local_addr(Host, Family),
     %% register both short and long names
-    {reply, {ok, 1}, State#{Long => {Addr, PortNo}, Short => {Addr, PortNo}}}.
+    {reply, {ok, 1}, State#{Long => #{addr => Addr, port => PortNo}, Short => #{addr => Addr, port => PortNo}}}.
 
+%% @private
+-spec handle_cast(term(), state()) -> no_return().
 handle_cast(_Cast, _State) ->
     error(badarg).
 
-terminate(_Reason, _State) ->
-    %% if erl_epmd code was replaced, get old code back
-    is_replaced() andalso
-        begin
-            BeamFile = filename:join(code:lib_dir(kernel, ebin), "erl_epmd"),
-            true = code:unstick_mod(erl_epmd),
-            {module, erl_epmd} = code:load_abs(BeamFile, erl_epmd),
-            %% we're still running old code (this code!), so can't purge
-            %%  effectively
-            true = code:stick_mod(erl_epmd),
-            false = code:purge(erl_epmd_ORIGINAL),
-            true = code:delete(erl_epmd_ORIGINAL)
-        end.
-
 %%--------------------------------------------------------------------
 %% Internal implementation
-
-is_replaced() ->
-    Kernel = code:lib_dir(kernel, ebin),
-    filename:dirname(code:which(erl_epmd)) =/= Kernel.
-
-copy(From, To) ->
-    {Mod, Binary, _Filename} = code:get_object_code(From),
-    {ok, {Mod, [{abstract_code, {_, Forms}}]}} = beam_lib:chunks(Binary, [abstract_code]),
-    Expanded = erl_expand_records:module(Forms, [strict_record_tests]),
-    Replaced = [
-        case Form of
-            {attribute, Ln, module, From} ->
-                {attribute, Ln, module, To};
-            Other ->
-                Other
-        end || Form <- Expanded],
-    {ok, To, Bin} = compile:forms(Replaced, [silent]),
-    {module, To} = code:load_binary(To, code:which(From), Bin).
-
-rename(From, To) ->
-    copy(From, To),
-    false = code:purge(From).
 
 local_addr(Host, Family) ->
     AddrLen = case Family of inet -> 4; inet6 -> 8 end,

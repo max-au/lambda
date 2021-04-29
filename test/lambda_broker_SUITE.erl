@@ -134,7 +134,7 @@ peer(Config) when is_list(Config) ->
     AuthorityNode = lambda_test:start_node_link(undefined, Boot, undefined, [], true),
     %% form the bootstrap
     Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
-    BootSpec = [{static, #{{lambda_authority, AuthorityNode} => Addr}}],
+    BootSpec = {static, #{{lambda_authority, AuthorityNode} => Addr}},
     %% start extra nodes
     ExpectedWorkers = lambda_test:start_nodes(undefined, Boot, BootSpec, 4),
     %% ensure they all find the authority

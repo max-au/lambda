@@ -25,12 +25,15 @@ pi(LastResult, Numerator, Denominator, Precision) ->
         true ->
             trunc(NextResult * Pow) / Pow;
         false ->
-            pi(NextResult, -1 * Numerator, Denominator+2, Precision)
+            pi(NextResult, -1 * Numerator, Denominator + 2, Precision)
     end.
 ```
 
-Start an authority node: `ERL_FLAGS="-lambda authority true" rebar3 shell --name authority`, compile `calc` and 
-publish it with small capacity:
+Start an authority node:
+```
+    ERL_FLAGS="-args_file config/shell.vm.args -lambda authority true" rebar3 shell --sname authority 
+```
+Compile `calc` and publish it with small capacity:
 ```
     (authority@max-au)1> ===> Booted lambda
     c("/tmp/calc.erl").
@@ -38,7 +41,11 @@ publish it with small capacity:
     (authority@max-au)2> lambda:publish(calc, #{capacity => 2}).
     ok
 ```
-Start another shell, `rebar3 as test shell --name front`, discover `calc` and execute `pi(5)` remotely:
+Start another shell (note: `as test` makes `erlperf` available in the shell):
+```shell
+    ERL_FLAGS="-args_file config/shell.vm.args" rebar3 as test shell --sname front
+```
+Discover `calc` and execute `pi(5)` remotely:
 ```
     (front@max-au)1> ===> Booted lambda
     lambda:discover(calc).
@@ -57,7 +64,11 @@ Use `erlperf` to verify maximum concurrency of 2:
 Output above means that `erlperf` detected total throughput of 166 `pi` calls per second, while running 2 concurrent
 processes (matching capacity published from `authority` node).
 
-Add more processing capacity by simply starting another node `rebar3 shell --name more`:
+Add more processing capacity by simply starting another node: 
+```shell 
+    ERL_FLAGS="-args_file config/shell.vm.args" rebar3 shell --name more
+```
+
 ```
     (more@max-au)1> c("/tmp/calc.erl").
     {ok,calc}
@@ -110,7 +121,7 @@ adding appropriate child specs to supervisor:
 ## Running tests
 Running any tests will fetch additional libraries as dependencies.
 This suite uses PropEr library to simulate all possible state changes.
-```bash
+```shell
     rebar3 ct --cover && rebar3 cover --verbose
 ```
 ## Changelog
