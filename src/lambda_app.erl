@@ -2,6 +2,7 @@
 %%  Lambda application callback module.
 %% @end
 -module(lambda_app).
+-compile(warn_missing_spec).
 -author("maximfca@gmail.com").
 
 -export([

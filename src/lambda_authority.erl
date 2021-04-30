@@ -43,7 +43,7 @@
 ]).
 
 -behaviour(gen_server).
--behaviour(cli).
+%% -behaviour(cli). %% uncommend when 'cli' behaviour supplied externally is recognised correctly
 
 %% gen_server callbacks
 -export([

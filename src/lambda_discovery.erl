@@ -13,7 +13,7 @@
 -author("maximfca@gmail.com").
 -compile(warn_missing_spec).
 
-%% API
+%% External API
 -export([
     set_node/2,
     del_node/1,

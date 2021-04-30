@@ -2,6 +2,7 @@
 %% Lambda: supervisor for plb supervised by lambda application.
 %% @end
 -module(lambda_client_sup).
+-compile(warn_missing_spec).
 -author("maximfca@gmail.com").
 
 -behaviour(supervisor).

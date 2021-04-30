@@ -4,6 +4,7 @@
 %%      and always starts a broker.
 %% @end
 -module(lambda_sup).
+-compile(warn_missing_spec).
 -author("maximfca@gmail.com").
 
 -behaviour(supervisor).
@@ -28,13 +29,8 @@ init([]) ->
     Authority = application:get_env(App, authority, lists:prefix("authority", Name)),
     %% broker is enabled by default
     Broker = application:get_env(App, broker, true),
-    %% Metrics (counters, gauges)
-    MetricsSpec = [
-        #{
-            id => lambda_metrics,
-            start => {lambda_metrics, start_link, []}
-        }
-    ],
+    %% Metrics (counters, gauges) are not ready yet, hence disabled
+    MetricsSpec = [], % #{id => lambda_metrics, start => {lambda_metrics, start_link, []}}],
     %% Authority, when enabled
     AuthoritySpec = [
         #{

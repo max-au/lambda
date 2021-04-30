@@ -6,6 +6,7 @@
 %%  a convenience primitive.
 %% @end
 -module(lambda_listener_sup).
+-compile(warn_missing_spec).
 -author("maximfca@gmail.com").
 
 -behaviour(supervisor).

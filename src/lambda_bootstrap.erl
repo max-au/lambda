@@ -14,7 +14,8 @@
 %% API
 -export([
     start_link/2,
-    discover/0
+    discover/0,
+    discover/1
 ]).
 
 -behaviour(gen_server).
@@ -24,8 +25,7 @@
     init/1,
     handle_call/3,
     handle_cast/2,
-    handle_info/2,
-    terminate/2
+    handle_info/2
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -36,7 +36,6 @@
 -type bootspec() ::
     {static, #{lambda_discovery:location() => lambda_discovery:address()}} |
     {epmd, [node()]} |
-    {file, file:filename_all()} | %% DEBUG only: file on a file system contains the static map
     {custom, module(), atom(), [term()]}. %% callback function
 
 %% @doc
@@ -46,11 +45,15 @@
 start_link([_ | _] = Subs, Bootspec) ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, {Subs, Bootspec}, []).
 
-%% @doc Forces discovery without waiting for timeout.
-%%      Useful for testing.
+%% @doc Forces discovery. Useful for testing.
 -spec discover() -> ok.
 discover() ->
-    gen_server:cast(?MODULE, discover).
+    gen_server:call(?MODULE, discover).
+
+%% @doc Replaces bootspec and forces discovery.
+-spec discover(BootSpec :: bootspec()) -> ok.
+discover(BootSpec) ->
+    gen_server:call(?MODULE, {discover, BootSpec}).
 
 %%--------------------------------------------------------------------
 %% gen_server implementation
@@ -72,29 +75,21 @@ discover() ->
 -define (LAMBDA_BOOTSTRAP_INTERVAL, 10000).
 
 init({Subs, Spec}) ->
-    %% DEBUG: for {file, ...} bootspec, if this node runs authority, trap exit
-    %%  to ensure terminate/2 is called
-    is_tuple(Spec) andalso element(1, Spec) =:= file andalso is_pid(whereis(lambda_authority)) andalso
-        erlang:process_flag(trap_exit, true),
     {ok, handle_resolve(#lambda_bootstrap_state{subscribers = Subs, spec = Spec})}.
 
-handle_call(_Req, _From, _State) ->
-    erlang:error(notsup).
-
--spec handle_cast(discover, state()) -> {noreply, state()}.
-handle_cast(discover, #lambda_bootstrap_state{timer = Timer} = State) ->
+handle_call(discover, _From, #lambda_bootstrap_state{timer = Timer} = State) ->
     Timer =/= undefined andalso erlang:cancel_timer(Timer),
-    {noreply, handle_resolve(State)}.
+    {noreply, handle_resolve(State)};
+handle_call({discover, NewSpec}, _From, State) ->
+    handle_call(discover, _From, State#lambda_bootstrap_state{spec = NewSpec}).
+
+-spec handle_cast(term(), state()) -> no_return().
+handle_cast(_Req, _State) ->
+    erlang:error(notsup).
 
 %% timer handler
 handle_info(resolve, State) ->
     {noreply, handle_resolve(State)}.
-
-terminate(_Reason, #lambda_bootstrap_state{spec = {file, _File}}) ->
-    is_pid(whereis(lambda_authority)) andalso
-        ?LOG_DEBUG("deregister authority", #{domain => [lambda]});
-terminate(_Reason, _State) ->
-    ok.
 
 %%--------------------------------------------------------------------
 %% Internal implementation
@@ -132,34 +127,7 @@ resolve({epmd, Epmd}) ->
     catch _:_ ->
         case inet_db:res_option(inet6) of true -> inet6; false -> inet end
     end,
-    resolve_epmd(Epmd, Family, #{});
-
-resolve({file, File}) ->
-    case is_pid(whereis(lambda_authority)) of
-        true ->
-            Self = {lambda_authority, node()},
-            Peers = case file:consult(File) of
-                {ok, PeersList} ->
-                    maps:from_list(PeersList);
-                _ -> #{}
-            end,
-            SelfAddr = lambda_discovery:get_node(),
-            case maps:get(Self, Peers, false) of
-                SelfAddr ->
-                    Peers;
-                _ ->
-                    ?LOG_DEBUG("registering authority ~200p => ~200p", [Self, SelfAddr], #{domain => [lambda]}),
-                    ok = file:write_file(File, lists:flatten(io_lib:format("~tp.~n", [{Self, SelfAddr}])), [append]),
-                    Peers#{Self => SelfAddr}
-                end;
-        false ->
-            case file:consult(File) of
-                {ok, [_|_] = Auths} ->
-                    maps:from_list(Auths);
-                _ ->
-                    #{}
-            end
-    end.
+    resolve_epmd(Epmd, Family, #{}).
 
 resolve_epmd([], _Family, Acc) ->
     Acc;

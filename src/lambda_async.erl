@@ -7,6 +7,7 @@
 %%
 %% @end
 -module(lambda_async).
+-compile(warn_missing_spec).
 -author("maximfca@gmail.com").
 
 -export([

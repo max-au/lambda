@@ -2,6 +2,7 @@
 %%  Lambda: API for publishing servers and turning modules into clients.
 %% @end
 -module(lambda).
+-compile(warn_missing_spec).
 -author("maximfca@gmail.com").
 
 %% API

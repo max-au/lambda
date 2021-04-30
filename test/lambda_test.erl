@@ -100,7 +100,7 @@ create_release(DestDir, RelApps, RelName, RelVsn) ->
 logger_config(Modules) ->
     Formatter = {logger_formatter,
         #{legacy_header => false, single_line => true,
-            template => [time, " ", pid, " ", mfa, ":", line, " ", msg, "\n"]}
+            template => [time, " ", node, " ", pid, " ", mfa, ":", line, " ", msg, "\n"]}
     },
     Filters = if Modules =:= [] -> #{}; true -> #{filters => [{module, {fun ?MODULE:filter_module/2, Modules}}]} end,
     LogCfg = [
@@ -146,7 +146,6 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
     %% in tests, use short names by default
     Name = random_name(TestId, Authority),
     TestCP = filename:dirname(code:which(?MODULE)),
-    Auth = if Authority -> ["-lambda", "authority", "true"]; true -> [] end,
     ExtraArgs = if
             Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))];
             true -> []
@@ -155,9 +154,8 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
         args => [
             "-boot", Boot,
             "-connect_all", "false",
-            "-start_epmd", "false",
             "-epmd_module", "lambda_discovery",
-            "-pa", TestCP] ++ Auth ++ ExtraArgs ++ CmdLine}),
+            "-pa", TestCP] ++ ExtraArgs ++ CmdLine}),
     %% wait for connection?
     case Bootspec of
         {static, Map} when is_map(Map) ->
@@ -208,7 +206,7 @@ random_name(TestId, Auth) ->
     Seq = ets:update_counter(ac_tab, {?MODULE, TestId}, 1, {{?MODULE, TestId}, 0}),
     list_to_atom(lists:flatten(io_lib:format("~s~s-~b", [format_kind(Auth), format_test_id(TestId), Seq]))).
 
-format_kind(true) -> "auth";
+format_kind(true) -> "authority";
 format_kind(false) -> "worker".
 
 format_test_id(undefined) -> [];
