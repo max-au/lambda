@@ -260,7 +260,7 @@ init_debug(Config) when is_list(Config) ->
     ct:capture_start(),
     {ok, Node} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME), shutdown => 1000,
         connection => standard_io, args => ["-init_debug"]}),
-    ct:sleep(1000), %% without this sleep, peer is not fast enough to print
+    ct:sleep(200), %% without this sleep, peer is not fast enough to print
     peer:stop(Node),
     ct:capture_stop(),
     Texts = ct:capture_get(),

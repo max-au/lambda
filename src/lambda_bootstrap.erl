@@ -150,13 +150,24 @@ resolve_epmd([Node | Tail], Family, Acc) ->
 -define (INET6_LOCALHOST, {0, 0, 0, 0, 0, 0, 0, 1}).
 
 resolve_ip([Name], inet) ->
-    {ok, HostName} = inet:gethostname(),
-    {list_to_atom(lists:concat([Name, "@", HostName])), #{addr => ?INET_LOCALHOST, port => resolve_port(Name, ?INET_LOCALHOST)}};
+    resolve_local(Name, ?INET_LOCALHOST);
 resolve_ip([Name], inet6) ->
-    {ok, HostName} = inet:gethostname(),
-    {list_to_atom(lists:concat([Name, "@", HostName])), #{addr => ?INET6_LOCALHOST, port => resolve_port(Name, ?INET6_LOCALHOST)}};
+    resolve_local(Name, ?INET6_LOCALHOST);
 resolve_ip([Name, Host], Family) ->
     {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(Host, Family),
+    {list_to_atom(lists:concat([Name, "@", Host])), #{addr => Ip, port => resolve_port(Name, Ip)}}.
+
+resolve_local(Name, Ip) ->
+    {ok, HostName} = inet:gethostname(),
+    Host =
+        case net_kernel:longnames() of
+            true ->
+                HostName ++ case inet_db:res_option(domain) of [] -> []; D -> [$. | D] end;
+            false ->
+                HostName;
+            ignored ->
+                "nohost"
+        end,
     {list_to_atom(lists:concat([Name, "@", Host])), #{addr => Ip, port => resolve_port(Name, Ip)}}.
 
 resolve_port(Name, Ip) ->

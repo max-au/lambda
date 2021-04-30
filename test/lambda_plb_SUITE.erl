@@ -140,7 +140,10 @@ lb_test(Precalculated, Precision, SampleCount, ClientConcurrency) ->
     ok = wait_complete(Spawned).
 
 lb(Config) when is_list(Config) ->
-    WorkerCount = 4,
+    WorkerCount = case erlang:system_info(schedulers) of
+                      Small when Small < 8 -> 2; %% 4 nodes, 1 + 2 + 3 + 4 = 12 cores, but even 8 is okay
+                      _Large -> 4
+                  end,
     SampleCount = 1000,
     Precision = 3,
     ClientConcurrency = 100,

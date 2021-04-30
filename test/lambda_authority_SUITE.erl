@@ -260,6 +260,7 @@ postcondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, ?MODULE, ch
     Peers = AuthNodes ++ maps:keys(Brokers),
     %% update bootspec for all nodes
     lambda_async:pmap([{peer, call, [P, lambda_bootstrap, discover, [{epmd, AuthNodes}]]} || P <- Peers]),
+    %% wait up to 4 sec for nodes to connect to authorities
     Connected = lambda_async:pmap([{peer, call, [N, lambda_test, wait_connection, [Peers -- [N]]]}
         || N <- AuthNodes]),
     case lists:usort(Connected) of

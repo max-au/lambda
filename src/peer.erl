@@ -919,7 +919,6 @@ io_server_loop(Kind, Port, Refs, Out) ->
             io_server_loop(Kind, Port, Refs, Out);
         _Other ->
             %% below, what is it?
-            io:format("WTF: ~200p~n", [_Other]),
             io_server_loop(Kind, Port, Refs, Out)
     end.
 
