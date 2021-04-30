@@ -79,7 +79,7 @@ init({Subs, Spec}) ->
 
 handle_call(discover, _From, #lambda_bootstrap_state{timer = Timer} = State) ->
     Timer =/= undefined andalso erlang:cancel_timer(Timer),
-    {noreply, handle_resolve(State)};
+    {reply, ok, handle_resolve(State)};
 handle_call({discover, NewSpec}, _From, State) ->
     handle_call(discover, _From, State#lambda_bootstrap_state{spec = NewSpec}).
 
