@@ -92,7 +92,7 @@ get_count(Idx) ->
 -type state() :: #lambda_metrics_state{}.
 
 %% Collect data once a minute
--define (COLLECT_INTERVAL, 60_000).
+-define (COLLECT_INTERVAL, 60000).
 
 init(dirty) ->
     %% If somehow this gen_server dies and restarts, existing counters

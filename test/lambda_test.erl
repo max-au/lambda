@@ -153,6 +153,7 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
     {ok, Node} = peer:StartFun(#{connection => standard_io, name => Name,
         args => [
             "-boot", Boot,
+            "-setcookie", "lambda",
             "-connect_all", "false",
             "-epmd_module", "lambda_discovery",
             "-pa", TestCP] ++ ExtraArgs ++ CmdLine}),
