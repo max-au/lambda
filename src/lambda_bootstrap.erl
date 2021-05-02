@@ -170,6 +170,10 @@ resolve_local(Name, Ip) ->
         end,
     {list_to_atom(lists:concat([Name, "@", Host])), #{addr => Ip, port => resolve_port(Name, Ip)}}.
 
+%% This is a temporary suppression needed only until OTP is updated to 24 RC1,
+%%  where bug in erl_epmd:port_please/2 spec is fixed.
+-dialyzer([{no_return, [resolve_port/2, resolve_ip/2, resolve_local/2]}, {no_fail_call, [resolve_port/2]}]).
 resolve_port(Name, Ip) ->
+    %% dialyzer for OTP before 24 will complain if real spec is used
     {port, Port, _Version} = erl_epmd:port_please(Name, Ip),
     Port.

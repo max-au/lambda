@@ -15,7 +15,8 @@
 -export([
     basic/0, basic/1,
     proper/0, proper/1,
-    reconnect/0, reconnect/1
+    reconnect/0, reconnect/1,
+    stop_authority/0, stop_authority/1
 ]).
 
 %% PropEr stateful testing exports
@@ -27,7 +28,7 @@
     next_state/3,
     %%
     start_authority/3,
-    start_broker/3,
+    start_worker/3,
     connect/2,
     disconnect/2,
     check_state/0
@@ -46,7 +47,7 @@ end_per_suite(Config) ->
     Config.
 
 all() ->
-    [basic, reconnect, proper].
+    [basic, reconnect, stop_authority, proper].
 
 %%--------------------------------------------------------------------
 %% Convenience & data
@@ -157,6 +158,24 @@ reconnect(Config) when is_list(Config) ->
     %% just in case: verify CLI returns the same information
     stop_tier(AllPeers).
 
+stop_authority() ->
+    [{doc, "Tests stopping authority"}].
+
+stop_authority(Config) when is_list(Config) ->
+    Boot = proplists:get_value(boot, Config),
+    W3 = start_workers(?FUNCTION_NAME, Boot, [], 3),
+    A1 = start_authority(?FUNCTION_NAME, Boot, []),
+    W2 = start_workers(?FUNCTION_NAME, Boot, [A1], 2),
+    peer:stop(A1),
+    %% expect system to come to a new state
+    ?assertEqual([ok || _ <- (W3 ++ W2)],
+        lambda_async:pmap([{peer, call, [W, lambda_test, wait_connection, [[]]]} || W <- (W3 ++ W2)])),
+    %% verity all workers lost authority
+    ActualAuths = lambda_async:pmap([{peer, call, [W, erlang, nodes, []]} || W <- (W3 ++ W2)]),
+    lambda_async:pmap([{peer, stop, [W]} || W <- (W3 ++ W2)]),
+    ?assertEqual([[]], lists:usort(ActualAuths)),
+    ok.
+
 proper() ->
     [{doc, "Property-based test verifying topology, mesh-connected for authorities, and none for lambdas"}].
 
@@ -196,9 +215,19 @@ start_authority(TestId, Boot, AuthNodes) ->
     lambda_test:start_node_link(TestId, Boot, {epmd, AuthNodes}, ["+S", "2:2"] ++ Logs, true).
 
 
-start_broker(TestId, Boot, AuthNodes) ->
+start_worker(TestId, Boot, AuthNodes) ->
     Logs = [], %% lambda_test:logger_config([lambda_bootstrap]),
     lambda_test:start_node_link(TestId, Boot, {epmd, AuthNodes}, ["+S", "2:2"] ++ Logs, false).
+
+start_workers(TestId, Boot, AuthNodes, HowMany) ->
+    Workers = lambda_async:pmap(
+        [fun () ->
+            Worker = start_worker(TestId, Boot, AuthNodes),
+            unlink(whereis(Worker)),
+            Worker
+         end || _ <- lists:seq(1, HowMany)]),
+    [link(whereis(W)) || W <- Workers],
+    Workers.
 
 connect(Peer1, Node2) ->
     peer:call(Peer1, net_kernel, connect_node, [Node2]).
@@ -235,7 +264,7 @@ initial_state() ->
     %% not used, initial state is supplied externally
     #cluster_state{}.
 
-precondition(#cluster_state{auth = Auth}, {call, ?MODULE, start_broker, [_, _, _]}) ->
+precondition(#cluster_state{auth = Auth}, {call, ?MODULE, start_worker, [_, _, _]}) ->
     map_size(Auth) < ?MAX_AUTHORITY;
 
 precondition(#cluster_state{brokers = Brokers}, {call, ?MODULE, start_authority, [_, _, _]}) ->
@@ -258,6 +287,12 @@ precondition(_State, {call, ?MODULE, check_state, []}) ->
 postcondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, ?MODULE, check_state, []}, _Res) ->
     AuthNodes = maps:keys(Auth),
     Peers = AuthNodes ++ maps:keys(Brokers),
+    %% synchronisation:
+    %%  (a) bootspec can change (so does list of authorities)
+    %%  (b) workers list can change
+    %%  (c) connections may be started or dropped
+    %% if nothing changed, no need to sync, but otherwise, all nodes need to finish
+    %%  processing in the allotted amount of time
     %% update bootspec for all nodes
     lambda_async:pmap([{peer, call, [P, lambda_bootstrap, discover, [{epmd, AuthNodes}]]} || P <- Peers]),
     %% wait up to 4 sec for nodes to connect to authorities
@@ -303,7 +338,7 @@ command(#cluster_state{test_id = TestId, auth = Auth, brokers = Brokers, boot = 
     %% nodes starting (authority/broker)
     AuthNodes = maps:keys(Auth),
     AuthorityStart = {1, {call, ?MODULE, start_authority, [TestId, Boot, AuthNodes]}},
-    BrokerStart = {5, {call, ?MODULE, start_broker, [TestId, Boot, AuthNodes]}},
+    BrokerStart = {5, {call, ?MODULE, start_worker, [TestId, Boot, AuthNodes]}},
     CheckState = {3, {call, ?MODULE, check_state, []}},
     %% stop: anything that is running can be stopped at will
     Stop =
@@ -329,7 +364,7 @@ next_state(_State, _Res, {init, InitialState}) ->
 next_state(#cluster_state{auth = Auth} = State, Res, {call, ?MODULE, start_authority, [_, _, _]}) ->
     State#cluster_state{auth = Auth#{Res => Res}};
 
-next_state(#cluster_state{brokers = Brokers} = State, Res, {call, ?MODULE, start_broker, [_, _, _]}) ->
+next_state(#cluster_state{brokers = Brokers} = State, Res, {call, ?MODULE, start_worker, [_, _, _]}) ->
     State#cluster_state{brokers = Brokers#{Res => Res}};
 
 next_state(State, _Res, {call, ?MODULE, connect, [_Peer1, _Node2]}) ->
