@@ -1,0 +1,17 @@
+-sname lambda
+-start_epmd false
+-connect_all false
+-setcookie lambda
+-env MALLOC_ARENA_MAX 1
+-epmd_module lambda_discovery
+
++swt low
++sbt u
++sbwt none
++sbwtdcpu none
++sbwtdio none
+
+-kernel inet_dist_listen_min 4370
+-kernel inet_dist_listen_max 4370
+
+# -proto_dist inet_tls

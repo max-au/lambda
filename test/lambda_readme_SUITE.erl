@@ -161,7 +161,8 @@ basic(Config) when is_list(Config) ->
     ?assertEqual(0, peer:call(Client, lambda_plb, capacity, [Plb])),
     %% stop PLB, which should make 'calc' module unload
     ok = peer:call(Client, gen_server, stop, [Plb]),
-    ?assertEqual(non_existing, peer:call(Client, code, which, [calc])).
+    ?assertEqual(non_existing, peer:call(Client, code, which, [calc])),
+    peer:stop(Client).
 
 remote_stateless_update() ->
     [{doc, "Update stateless code on a remote tier"}].

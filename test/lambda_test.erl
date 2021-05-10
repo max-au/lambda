@@ -176,41 +176,29 @@ start_nodes(TestId, Boot, BootSpec, Count) ->
 
 %% @doc
 %% executed in the remote node: waits until node is connected to a list of other nodes passed
--spec wait_connection([node()]) -> ok |
-    {error, #{reason := timeout | {nodeup, node()} | {nodedown, node()}, disconnected => [node()], connected => [node()]}}.
+%% If FailUnexpected set to 'true', then unexpected node up/down event triggers an error.
+%% Otherwise unexpectedly disconnected nodes added to those waiting for, and unexpectedly
+%%  connected waits for a disconnect.
+-spec wait_connection([node()]) -> ok | {error, {Missing :: [node()], Extra :: [node()]}}.
 wait_connection(Nodes) ->
-    %% subscribe to all nodeup events and wait...
+    %% subscribe to all nodeup/nodedown events and wait...
     net_kernel:monitor_nodes(true),
-    Connected = nodes(),
-    ToConnect = Nodes -- Connected,
-    ToDisconnect = Connected -- Nodes,
-    Result = wait_nodes(ToConnect, ToDisconnect, 4500), %% keep barrier shorter than gen_server:call timeout
+    %% keep barrier shorter than gen_server:call timeout
+    Result = wait_nodes(lists:usort(Nodes), lists:sort(nodes()), 4500),
     net_kernel:monitor_nodes(false),
     Result.
 
-wait_nodes([], [], _TimeLeft) ->
+wait_nodes(Expected, Expected, _TimeLeft) ->
     ok;
-wait_nodes(ToConnect, ToDisconnect, TimeLeft) ->
+wait_nodes(Expected, _Actual, TimeLeft) ->
     StartedAt = erlang:system_time(millisecond),
     receive
-        {nodeup, Node} ->
-            case lists:member(Node, ToConnect) of
-                true ->
-                    DoneAt = erlang:system_time(millisecond),
-                    wait_nodes(lists:delete(Node, ToConnect), ToDisconnect, TimeLeft - (DoneAt - StartedAt));
-                false ->
-                    {error, #{reason => {nodeup, Node}, disconnected => ToConnect, connected => ToDisconnect}}
-            end;
-        {nodedown, Node} ->
-            case lists:member(Node, ToConnect) of
-                true ->
-                    DoneAt = erlang:system_time(millisecond),
-                    wait_nodes(ToConnect, lists:delete(Node, ToDisconnect), TimeLeft - (DoneAt - StartedAt));
-                false ->
-                    {error, #{reason => {nodedown, Node}, disconnected => ToConnect, connected => ToDisconnect}}
-            end
+        {Event, _Node} when Event =:= nodeup; Event =:= nodedown ->
+            DoneAt = erlang:system_time(millisecond),
+            wait_nodes(Expected, lists:sort(nodes()), TimeLeft - (DoneAt - StartedAt))
     after TimeLeft ->
-        {error, #{reason => timeout, disconnected => ToConnect, connected => ToDisconnect}}
+        Nodes = nodes(),
+        {error, {Nodes -- Expected, Expected -- Nodes}}
     end.
 
 %% @private
