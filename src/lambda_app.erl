@@ -12,11 +12,14 @@
 
 -behaviour(application).
 
+-include_lib("kernel/include/logger.hrl").
+
 -spec start(normal, []) -> {ok, pid()} | {error, {already_started, pid()}}.
 start(normal, []) ->
     try lambda_discovery:get_node()
     catch exit:{noproc, _} ->
-        error("lambda requires '-epmd_module lambda_discovery' argument to erl, or 'ERL_FLAGS=\'-args_file config/shell.vm.args\' rebar3 shell'")
+        ?LOG_WARNING("lambda requires '-epmd_module lambda_discovery' for alternative service discovery",
+            [], #{domain => [lambda]})
     end,
     lambda_sup:start_link().
 

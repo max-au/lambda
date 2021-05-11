@@ -8,13 +8,17 @@
 %%          {fun (X) -> X end, X}]).
 %%
 %%  Barrier example:
+%%      ```
 %%      Ctx = lambda_async:async(fun () -> sleep(10) end),
 %%      lambda_async(Ctx, [{mymod, slowfun, [Arg]} || Arg <- Calls]),
 %%      [SleepRet | More] = lambda_async:wait(Ctx).
+%%      '''
 %%
 %%  Separating success from errors:
+%%      ```
 %%      #{ok := Success, timeout := Timeout} =
 %%          lambda_async:pmap([fun () -> timer:sleep(rand:uniform(1000)) end || _ <- lists:seq(1, 5)], 500).
+%%      '''
 %%
 %% @end
 -module(lambda_async).

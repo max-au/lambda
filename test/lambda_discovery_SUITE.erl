@@ -65,5 +65,12 @@ epmd_fallback() ->
 epmd_fallback(Config) when is_list(Config) ->
     ?assertEqual(undefined, whereis(erl_epmd)),
     {ok, Pid} = lambda_discovery:start_link(),
+    ?assertNotEqual(undefined, whereis(erl_epmd)),
+    %% try out two peers discovering each other via epmd
+    {ok, Peer1} = peer:start_link(#{connection => standard_io, name => peer:random_name()}),
+    {ok, Peer2} = peer:start_link(#{connection => standard_io, name => peer:random_name()}),
+    true = peer:call(Peer1, net_kernel, connect_node, [Peer2]),
+    peer:stop(Peer2),
+    peer:stop(Peer1),
     gen:stop(Pid),
     ?assertEqual(undefined, whereis(erl_epmd)).

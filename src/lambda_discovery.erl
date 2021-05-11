@@ -5,9 +5,9 @@
 %%
 %% The release (or erl) should be started with "-epmd_module lambda_discovery".
 %%
-%% NOTE: release is expected to run with "-start_epmd false". If this parameter
-%%  is not supplied, lambda_discovery also starts original `epmd' module as
-%%  a fallback.
+%% By default lambda_discovery starts original erl_epmd as a fallback.
+%% Use application configuration to disable this behaviour:
+%%  {epmd_fallback, false}.
 %% @end
 -module(lambda_discovery).
 -author("maximfca@gmail.com").
@@ -38,6 +38,7 @@
     init/1,
     handle_call/3,
     handle_cast/2,
+    handle_continue/2,
     terminate/2
 ]).
 
@@ -51,11 +52,10 @@
 
 %% Full set of information needed to establish network connection
 %%  to a specific host, with no external services required.
-%% TODO: add TLS support fields (protocol, CA certs, key, cert)
 -type address() :: #{
-    addr := inet:ip_address(),
-    port := inet:port_number(),
-    family => inet | inet6
+    addr := inet:ip_address(), %% family is clear from IP address size
+    port := inet:port_number()
+    %% proto => tcp | {tls, [ssl:tls_client_option()]}
 }.
 
 %% Process location (similar to emgr_name()). Process ID (pid)
@@ -81,10 +81,7 @@ set_node(Pid, Address) when is_pid(Pid) ->
     set_node(node(Pid), Address);
 set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
     set_node(Node, Address);
-set_node(Node, _Address) when Node =:= node() ->
-    %% ignore attempts to set this node address
-    ok;
-set_node(Node, #{addr := _Ip, port := _Port} = Address) ->
+set_node(Node, #{addr := _Ip, port := _Port} = Address) when is_atom(Node) ->
     gen_server:call(?MODULE, {set, Node, Address}).
 
 %% @doc Removes the node name from the map. Does nothing if node was never added.
@@ -92,8 +89,9 @@ set_node(Node, #{addr := _Ip, port := _Port} = Address) ->
 del_node(Node) ->
     gen_server:call(?MODULE, {del, Node}).
 
-%% @doc Returns mapping of the node name to an address.
--spec get_node(node()) -> lambda_discovery:address() | error.
+%% @doc Returns mapping of the node name to an address, using the
+%%      default selector.
+-spec get_node(node()) -> address() | error.
 get_node(Node) ->
     gen_server:call(?MODULE, {get, Node}).
 
@@ -101,9 +99,9 @@ get_node(Node) ->
 %%      expected to work when sent to other nodes via distribution
 %%      channels. It is expected to return external node address,
 %%      if host is behind NAT.
--spec get_node() -> address() | not_distributed.
+-spec get_node() -> address() | error.
 get_node() ->
-    gen_server:call(?MODULE, {get, node()}).
+    get_node(node()).
 
 %%--------------------------------------------------------------------
 %% EPMD implementation
@@ -184,15 +182,19 @@ address_please(Name, Host, AddressFamily) ->
         #{addr := Addr, port := Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
             {ok, Addr, Port, ?EPMD_VERSION};
         error ->
-            {error, not_found}
+            case epmd_fallback() of
+                true ->
+                    erl_epmd:address_please(Name, Host, AddressFamily);
+                false ->
+                    {error, not_found}
+            end
     end.
 
 %%--------------------------------------------------------------------
 %% Server implementation
 
 %% Discovery state: maps node names to addresses.
-%% Current limitation: a node can only have a single address,
-%%  either IPv4 or IPv6.
+%% TODO: support multiple endpoints (e.g. inet, inet6, ...)
 -type state() :: #{node() => address()}.
 
 %% @private
@@ -204,16 +206,7 @@ init([]) ->
             erl_epmd:start_link(),
             process_flag(trap_exit, true) %% otherwise terminate/2 is not called
         end,
-    %% always populate the local node address
-    try
-        {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
-            [{listen, _Port, _Proc, {net_address, {_Ip, Port}, HostName, _Proto, Fam}, _Mod}],
-            _, _, _, _, _} = sys:get_state(net_kernel),
-        {ok, #{node() => #{addr => local_addr(HostName, Fam), port => Port}}}
-    catch
-        _:_ ->
-            {ok, #{node() => not_distributed}}
-    end.
+    {ok, #{}}.
 
 %% @private
 -spec handle_call(
@@ -236,25 +229,36 @@ handle_call({get, Node}, _From, State) ->
 handle_call({names, HostName}, _From, State) ->
     %% find all Nodes of a HostName - need to iterate the entire node
     %%  map. This is a very rare request, so can be slow
-    Nodes = lists:filter(fun (Full) -> tl(string:lexemes(atom_to_list(Full), "@")) =:= HostName end, maps:keys(State)),
+    Nodes = lists:filter(
+        fun (Full) ->
+            tl(string:lexemes(atom_to_list(Full), "@")) =:= HostName
+        end, maps:keys(State)),
     {reply, Nodes, State};
 
 handle_call({register, Name, PortNo, Family}, _From, State) ->
+    ?LOG_DEBUG("registering ~s (~s) port ~bp", [Name, Family, PortNo], #{domain => [lambda]}),
     %% fallback, registering in epmd
-    epmd_fallback() andalso
-        try
-            {ok, _Creation} = erl_epmd:register_node(Name, PortNo, Family)
-        catch Class:Reason ->
-            ?LOG_ERROR("epmd fallback failed with ~s:~p", [Class, Reason], #{domain => [lambda]})
+    Creation =
+        case epmd_fallback() of
+            true ->
+                try
+                    {ok, Creation1} = erl_epmd:register_node(Name, PortNo, Family),
+                    Creation1
+                catch Class:Reason ->
+                    ?LOG_ERROR("epmd fallback failed with ~s:~p", [Class, Reason], #{domain => [lambda]}),
+                    1
+                end;
+            false ->
+                1
         end,
-    %% get the local hostname
+    {reply, {ok, Creation}, State, {continue, {register, PortNo, Family}}}.
+
+-spec handle_continue({register, iinet:port_number(), inet | inet6}, state()) -> {noreply, state()}.
+handle_continue({register, PortNo, Family}, State) ->
+    %% populate the local node address
     {ok, Host} = inet:gethostname(),
-    Domain = case inet_db:res_option(domain) of [] -> []; D -> [$. | D] end,
-    Long = make_node(Name, Host ++ Domain),
-    Short = make_node(Name, Host),
     Addr = local_addr(Host, Family),
-    %% register both short and long names
-    {reply, {ok, 1}, State#{Long => #{addr => Addr, port => PortNo}, Short => #{addr => Addr, port => PortNo}}}.
+    {noreply, State#{node() => #{addr => Addr, port => PortNo, family => Family}}}.
 
 %% @private
 -spec handle_cast(term(), state()) -> no_return().
@@ -271,7 +275,7 @@ terminate(_Reason, _State) ->
 %% Internal implementation
 
 epmd_fallback() ->
-    {ok, [["false"]]} =/= init:get_argument(start_epmd).
+    application:get_env(lambda, epmd_fallback, true).
 
 local_addr(Host, Family) ->
     AddrLen = case Family of inet -> 4; inet6 -> 8 end,
