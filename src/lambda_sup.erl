@@ -24,6 +24,15 @@ init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
     %% Lambda may run under a different supervision tree via included_applications
     App = case application:get_application() of {ok, A} -> A; undefined -> lambda end,
+    %% Discovery: if node is not started with -epmd_module lambda_discovery, use
+    %%  a fallback method via inet_db.
+    DiscoSpec = [
+        #{
+            id => lambda_discovery,
+            start => {lambda_discovery, start_link, []},
+            modules => [lambda_discovery]
+        } || undefined <- [whereis(lambda_discovery)]
+    ],
     %% authority is not enabled by default, unless node name starts with `authority`
     [Name, _] = string:lexemes(atom_to_list(node()), "@"),
     Authority = application:get_env(App, authority, lists:prefix("authority", Name)),
@@ -49,7 +58,8 @@ init([]) ->
     Subscribers = [lambda_authority || true <- [Authority]] ++ [lambda_broker || true <- [Broker]],
     %% Bootstrap processes supervised by Lambda, by default there is no bootspec
     %%  at all, initial bootstrap comes from configuration or via an API.
-    DynBoot = application:get_env(App, bootspec, {epmd, [node()]}),
+    ImplicitAuthority = if Authority -> node(); true -> 'authority' end,
+    DynBoot = application:get_env(App, bootspec, {epmd, [ImplicitAuthority]}),
     BootSpec = [
         #{
             id => lambda_bootstrap,
@@ -75,7 +85,7 @@ init([]) ->
             modules => [lambda_client_sup]
         }
     ],
-    {ok, {SupFlags, MetricsSpec ++ AuthoritySpec ++ BrokerSpec ++ BootSpec ++ ModSup}}.
+    {ok, {SupFlags, DiscoSpec ++ MetricsSpec ++ AuthoritySpec ++ BrokerSpec ++ BootSpec ++ ModSup}}.
 
 
 %%--------------------------------------------------------------------

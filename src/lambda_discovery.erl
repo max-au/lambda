@@ -4,8 +4,10 @@
 %% Implements a simple mapping, exposed via EPMD API.
 %%
 %% The release (or erl) should be started with "-epmd_module lambda_discovery".
+%% If it was not, lambda_discovery will use inet_db to inject IP addresses into
+%%  erl_epmd that is expected to be started.
 %%
-%% By default lambda_discovery starts original erl_epmd as a fallback.
+%% lambda_discovery may start original erl_epmd as a fallback.
 %% Use application configuration to disable this behaviour:
 %%  {epmd_fallback, false}.
 %% @end
@@ -191,13 +193,33 @@ address_please(Name, Host, AddressFamily) ->
 %% @private
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    %% epmd fallback
-    epmd_fallback() andalso
-        begin
-            erl_epmd:start_link(),
-            process_flag(trap_exit, true) %% otherwise terminate/2 is not called
+    InitialState =
+        case epmd_fallback() of
+            true ->
+                %% epmd fallback enabled
+                case erl_epmd:start_link() of
+                    {ok, Pid} ->
+                        %% node will get it's own address during registration
+                        process_flag(trap_exit, true), %% otherwise terminate/2 is not called
+                        put(erl_epmd, Pid),
+                        #{};
+                    {error, {already_started, _Pid}} ->
+                        %% may be already registered, need to ask net_kernel
+                        try
+                            {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
+                                [{listen, _, _Proc, {net_address, {_Ip, Port}, _HostName, _Proto, Family}, _Mod}],
+                                _, _, _, _, _} = sys:get_state(net_kernel),
+                            {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(hostname(node()), Family),
+                            #{node() => #{addr => Ip, port => Port}}
+                        catch _:_ ->
+                            %% distribution not started yet
+                            #{}
+                        end
+                end;
+            false ->
+                #{}
         end,
-    {ok, #{}}.
+    {ok, InitialState}.
 
 %% @private
 -spec handle_call(
@@ -207,9 +229,19 @@ init([]) ->
     {register, string(), inet:port_number(), inet | inet6}, {pid(), reference()}, state()) -> {reply, term(), state()}.
 handle_call({set, Node, Address}, _From, State) ->
     ?LOG_DEBUG("set ~s to ~200p", [Node, Address], #{domain => [lambda]}),
+    epmd_fallback() andalso inet_db:add_host(hostname(Node), maps:get(addr, Address)),
     {reply, ok, State#{Node => Address}};
 
 handle_call({del, Node}, _From, State) ->
+    %% epmd fallback: if erl_epmd was started before
+    %%  lambda_discovery, we can still trick erl_epmd into
+    %%  using it by adjusting inet_db
+    epmd_fallback() andalso case maps:find(Node, State) of
+                                {ok, #{addr := Ip}} ->
+                                    inet_db:del_host(Ip);
+                                error ->
+                                    ok
+                            end,
     {reply, ok, maps:remove(Node, State)};
 
 handle_call({get, Node}, _From, State) ->
@@ -222,7 +254,7 @@ handle_call({names, HostName}, _From, State) ->
     %%  map. This is a very rare request, so can be slow
     Nodes = lists:filter(
         fun (Full) ->
-            tl(string:lexemes(atom_to_list(Full), "@")) =:= HostName
+            hostname(Full) =:= HostName
         end, maps:keys(State)),
     {reply, Nodes, State};
 
@@ -259,11 +291,15 @@ handle_cast(_Cast, _State) ->
 %% @private
 -spec terminate(term(), state()) -> ok.
 terminate(_Reason, _State) ->
-    epmd_fallback() andalso gen:stop(erl_epmd),
+    epmd_fallback() andalso get(erl_epmd) =/= undefined andalso
+        gen:stop(get(erl_epmd)),
     ok.
 
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+hostname(Node) ->
+    tl(string:lexemes(atom_to_list(Node), "@")).
 
 epmd_fallback() ->
     application:get_env(lambda, epmd_fallback, true).

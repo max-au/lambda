@@ -1,8 +1,0 @@
-# This configuration is used by rebar3 shell, for both authority and worker nodes
-# Add '-lambda authority true' to run authority on this node.
-
--connect_all false
--setcookie lambda
--env MALLOC_ARENA_MAX 1
--epmd_module lambda_discovery
--lambda bootspec '{epmd, [authority]}'

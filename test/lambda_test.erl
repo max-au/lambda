@@ -184,7 +184,7 @@ wait_connection(Nodes) ->
     %% subscribe to all nodeup/nodedown events and wait...
     net_kernel:monitor_nodes(true),
     %% keep barrier shorter than gen_server:call timeout
-    Result = wait_nodes(lists:usort(Nodes), lists:sort(nodes()), 4500),
+    Result = wait_nodes(lists:usort(Nodes) -- [node()], lists:sort(nodes()), 4500),
     net_kernel:monitor_nodes(false),
     Result.
 

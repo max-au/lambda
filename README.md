@@ -32,7 +32,7 @@ pi(LastResult, Numerator, Denominator, Precision) ->
 Start an authority node (note the convention, when a node is named `authority`,
 it starts `lambda_authority` by default):
 ```
-    ERL_FLAGS="-args_file config/shell.vm.args" rebar3 shell --sname authority
+    rebar3 shell --sname authority
 ```
 Compile `calc` and publish it with small capacity:
 ```
@@ -45,7 +45,7 @@ Compile `calc` and publish it with small capacity:
 Start another shell (note: `as test` makes `erlperf` available in the shell,
 you can omit it if you don't want `erlperf`):
 ```shell
-    ERL_FLAGS="-args_file config/shell.vm.args" rebar3 as test shell --sname front
+    rebar3 as test shell --sname front
 ```
 Discover `calc` and execute `pi(5)` remotely:
 ```
@@ -68,7 +68,7 @@ processes (matching capacity published from `authority` node).
 
 Add more processing capacity by simply starting another node: 
 ```shell 
-    ERL_FLAGS="-args_file config/shell.vm.args" rebar3 shell --name more
+    rebar3 shell --name more
 ```
 
 ```
