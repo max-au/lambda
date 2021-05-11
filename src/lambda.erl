@@ -21,7 +21,10 @@
 
 -type dst() :: atom() | pid() | {local, atom()} | {global, term()} | {'via', Module :: module(), Name :: term()}.
 
--export_type([meta/0, dst/0]).
+%% Location: pid or {registered_process, node}
+-type location() :: pid() | {atom(), node()}.
+
+-export_type([meta/0, dst/0, location/0]).
 
 %%--------------------------------------------------------------------
 %% @doc Discovers a module, and starts a PLB for that module under lambda supervision.

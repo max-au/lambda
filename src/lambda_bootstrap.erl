@@ -34,7 +34,7 @@
 %% API
 
 -type bootspec() ::
-    {static, #{lambda_discovery:location() => lambda_discovery:address()}} |
+    {static, #{lambda:location() => lambda_discovery:address()}} |
     {epmd, [node()]} |
     {custom, module(), atom(), [term()]}. %% callback function
 
@@ -64,7 +64,7 @@ discover(BootSpec) ->
     %% boot spec remembered
     spec :: bootspec(),
     %% last resolved bootstrap (if any)
-    bootstrap = #{} :: #{lambda_discovery:location() => lambda_discovery:address()},
+    bootstrap = #{} :: #{lambda:location() => lambda_discovery:address()},
     %% timer for regular updates
     timer :: undefined | reference()
 }).

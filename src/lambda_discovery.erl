@@ -244,7 +244,7 @@ handle_call({register, Name, PortNo, Family}, _From, State) ->
         end,
     {reply, {ok, Creation}, State, {continue, {register, PortNo, Family}}}.
 
--spec handle_continue({register, iinet:port_number(), inet | inet6}, state()) -> {noreply, state()}.
+-spec handle_continue({register, inet:port_number(), inet | inet6}, state()) -> {noreply, state()}.
 handle_continue({register, PortNo, Family}, State) ->
     %% populate the local node address
     {ok, Host} = inet:gethostname(),

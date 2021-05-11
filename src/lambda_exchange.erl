@@ -82,7 +82,7 @@ cancel(Exchange, Type, Id) ->
     Quantity :: non_neg_integer(),
     MRef :: reference(),
     Id :: non_neg_integer(),
-    Contact :: {lambda_discovery:location(), lambda_discovery:address()},
+    Contact :: {lambda:location(), lambda_discovery:address()},
     Meta :: lambda_broker:sell_meta()
 }.
 

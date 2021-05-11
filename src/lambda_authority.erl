@@ -78,7 +78,7 @@ brokers(Authority) ->
     gen_server:call(Authority, brokers).
 
 %% @doc adds a map of potential authority peers
--spec peers(lambda:dst(), #{lambda_discovery:location() => lambda_discovery:address()}) -> ok.
+-spec peers(lambda:dst(), #{lambda:location() => lambda_discovery:address()}) -> ok.
 peers(Authority, Peers) ->
     Authority ! {peers, Peers},
     ok.
