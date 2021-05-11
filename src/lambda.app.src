@@ -1,7 +1,8 @@
 {application, lambda,
     [{description, "Lambda: Computing Service for Erlang"},
         {vsn, "0.1.2"},
-        {registered, [lambda_sup, lambda_bootstrap, lambda_authority, lambda_broker, lambda_discovery, lambda_metrics, lambda_client_sup, lambda_listener_sup]},
+        {registered, [lambda_sup, lambda_bootstrap, lambda_authority,
+            lambda_broker, lambda_discovery, lambda_client_sup, lambda_listener_sup]},
         {mod, {lambda_app, []}},
         {applications,
             [kernel,
@@ -12,6 +13,7 @@
             %% {authority, false},
             %% {broker, true},
             %% {bootspec, ...}, %% see lambda_bootstrap
+            %% {epmd_fallback, true}, %% epmd fallback enabled
             %% {publish, [mod1, mod2]}, %% modules to publish under lambda supervision
             %% {discover, [mod1, mod2]} %% modules to discover, supervised by lambda
         ]},

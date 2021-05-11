@@ -288,9 +288,14 @@ discover(Existing, New, Self) ->
         fun (Location, _Addr) when is_map_key(Location, Existing) ->
                 ok;
             (Location, Addr) ->
-                lambda_discovery:set_node(Location, Addr),
+                set_node(Location, Addr),
                 Location ! {discover, self(), Self}
         end, New).
+
+set_node(Location, Addr) when is_pid(Location) ->
+    lambda_discovery:set_node(node(Location), Addr);
+set_node({_Reg, Node}, Addr) ->
+    lambda_discovery:set_node(Node, Addr).
 
 cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors, exchanges = Exchanges} = State) ->
     case maps:take(Pid, Monitors) of
@@ -354,7 +359,7 @@ connect_sellers(_Buyer, []) ->
     ok;
 connect_sellers(Buyer, Contacts) ->
     %% sellers contacts were discovered, ensure discovery knows contacts
-    [lambda_discovery:set_node(Pid, Addr) || {{Pid, Addr}, _Quantity, _Meta} <- Contacts],
+    [lambda_discovery:set_node(node(Pid), Addr) || {{Pid, Addr}, _Quantity, _Meta} <- Contacts],
     %% filter our contact information
     Servers = [{Pid, Quantity, Meta} || {{Pid, _Addr}, Quantity, Meta} <- Contacts],
     %% pass on order to the actual buyer

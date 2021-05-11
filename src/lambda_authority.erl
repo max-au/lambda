@@ -225,9 +225,14 @@ discover(Existing, New) ->
         fun (Location, _Addr) when is_map_key(Location, Existing) ->
                 ok;
             (Location, Addr) ->
-                ok = lambda_discovery:set_node(Location, Addr),
+                set_node(Location, Addr),
                 Location ! {syn, self(), Existing}
         end, New).
+
+set_node(Location, Addr) when is_pid(Location) ->
+    lambda_discovery:set_node(node(Location), Addr);
+set_node({_Reg, Node}, Addr) ->
+    lambda_discovery:set_node(Node, Addr).
 
 ensure_exchange(Module, #lambda_authority_state{exchanges = Exch} = State) ->
     case maps:find(Module, Exch) of

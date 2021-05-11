@@ -34,6 +34,7 @@ groups() ->
 init_per_group(local, Config) ->
     %% start discovery
     {ok, Disco} = lambda_discovery:start_link(),
+    lambda_discovery:set_node(node(), #{addr => {127, 0, 0, 1}, port => 1}), %% not distributed
     unlink(Disco),
     [{disco, Disco} | Config];
 init_per_group(_Group, Config) ->

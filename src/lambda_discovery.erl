@@ -58,15 +58,10 @@
     %% proto => tcp | {tls, [ssl:tls_client_option()]}
 }.
 
-%% Process location (similar to emgr_name()). Process ID (pid)
-%%  designates both node name and ID. If process ID is not known,
-%%  locally registered process name can be used.
--type location() :: pid() | {atom(), node()}.
-
 %% Internally, hostname can be atom, string, or IP address.
 -type hostname() :: atom() | string() | inet:ip_address().
 
--export_type([address/0, location/0]).
+-export_type([address/0]).
 
 %% @doc
 %% Starts the server and links it to calling process. Required for
@@ -76,11 +71,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% @doc Sets the mapping between node name and address to access the node.
--spec set_node(node() | location(), address()) -> ok.
-set_node(Pid, Address) when is_pid(Pid) ->
-    set_node(node(Pid), Address);
-set_node({RegName, Node}, Address) when is_atom(RegName), is_atom(Node) ->
-    set_node(Node, Address);
+-spec set_node(node(), address()) -> ok.
 set_node(Node, #{addr := _Ip, port := _Port} = Address) when is_atom(Node) ->
     gen_server:call(?MODULE, {set, Node, Address}).
 

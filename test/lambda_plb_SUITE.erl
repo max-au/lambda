@@ -191,9 +191,10 @@ fail_capacity_wait(Config) when is_list(Config) ->
     %% start both client & server locally (also verifies that it's possible - and there
     %%  are no registered names clashes)
     {ok, Disco} = lambda_discovery:start_link(),
+    lambda_discovery:set_node(node(), #{addr => {127, 0, 0, 1}, port => 1}), %% not distributed
     {ok, Auth} = lambda_authority:start_link(),
     {ok, Broker} = lambda_broker:start_link(),
-    lambda_broker:authorities(Broker, #{Auth => undefined}),
+    lambda_broker:authorities(Broker, #{Auth => lambda_discovery:get_node()}),
     {ok, Worker} = lambda_listener:start_link(lambda_broker, ?MODULE, #{capacity => Concurrency}),
     %% client
     {ok, Plb} = lambda_plb:start_link(Broker, ?MODULE, #{capacity => 1000, compile => false}),
