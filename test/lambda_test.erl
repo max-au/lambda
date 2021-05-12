@@ -16,7 +16,8 @@
     start_node/5,
     start_node_link/5,
     start_nodes/4,
-    wait_connection/1
+    wait_connection/1,
+    wait_connection/2
 ]).
 
 -type sync_target() :: sys:name() | {lambda:dst(), sys:name()}.
@@ -161,7 +162,7 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
     case Bootspec of
         {static, Map} when is_map(Map) ->
             {_, BootNodes} = lists:unzip(maps:keys(Map)),
-            ok = peer:call(Node, ?MODULE, wait_connection, [BootNodes]);
+            ok = peer:call(Node, ?MODULE, wait_connection, [BootNodes, relaxed]);
         _ ->
             ok
     end,
@@ -175,30 +176,53 @@ start_nodes(TestId, Boot, BootSpec, Count) ->
         || _ <- lists:seq(1, Count)]).
 
 %% @doc
-%% executed in the remote node: waits until node is connected to a list of other nodes passed
-%% If FailUnexpected set to 'true', then unexpected node up/down event triggers an error.
-%% Otherwise unexpectedly disconnected nodes added to those waiting for, and unexpectedly
-%%  connected waits for a disconnect.
--spec wait_connection([node()]) -> ok | {error, {Missing :: [node()], Extra :: [node()]}}.
+%% Executed in the remote node: waits until node is connected to a list of nodes passed.
+-spec wait_connection([node()]) -> ok | {error, {{missing, [node()]}, {extra, [node()]}}}.
 wait_connection(Nodes) ->
-    %% subscribe to all nodeup/nodedown events and wait...
-    net_kernel:monitor_nodes(true),
-    %% keep barrier shorter than gen_server:call timeout
-    Result = wait_nodes(lists:usort(Nodes) -- [node()], lists:sort(nodes()), 4500),
-    net_kernel:monitor_nodes(false),
-    Result.
+    wait_connection(Nodes, strict).
 
-wait_nodes(Expected, Expected, _TimeLeft) ->
-    ok;
-wait_nodes(Expected, _Actual, TimeLeft) ->
+%% @doc
+%% Executed in the remote node: waits for node to be connected to a list of nodes passed,
+%%  allowing extra nodes to also be connected.
+-spec wait_connection([node()], relaxed | strict) -> ok |
+    {error, {missing, [node()]}} |
+    {error, {{missing, [node()]}, {extra, [node()]}}}.
+wait_connection(Nodes, Mode) ->
+    Expected = lists:usort(Nodes -- [node()]),
+    Actual = lists:sort(nodes()),
+    case Expected -- Actual of
+        [] when Mode =:= relaxed ->
+            ok;
+        [] when Actual == Expected ->
+            ok;
+        _ ->
+            %% subscribe to all nodeup/nodedown events and wait...
+            net_kernel:monitor_nodes(true),
+            %% keep barrier shorter than gen_server:call timeout
+            Result = wait_nodes(Expected, Mode, 4500),
+            net_kernel:monitor_nodes(false),
+            Result
+    end.
+
+wait_nodes(Expected, Mode, TimeLeft) ->
     StartedAt = erlang:system_time(millisecond),
     receive
         {Event, _Node} when Event =:= nodeup; Event =:= nodedown ->
             DoneAt = erlang:system_time(millisecond),
-            wait_nodes(Expected, lists:sort(nodes()), TimeLeft - (DoneAt - StartedAt))
+            Actual = lists:sort(nodes()),
+            case Expected -- Actual of
+                [] when Mode =:= relaxed ->
+                    ok;
+                [] when Actual == Expected ->
+                    ok;
+                _ ->
+                    wait_nodes(Expected, Mode, TimeLeft - (DoneAt - StartedAt))
+            end
     after TimeLeft ->
         Nodes = nodes(),
-        {error, {Nodes -- Expected, Expected -- Nodes}}
+        if Mode =:= relaxed -> {error, {missing, Expected -- Nodes}};
+            true -> {error, {{missing, Expected -- Nodes}, {extra, Nodes -- Expected}}}
+        end
     end.
 
 %% @private

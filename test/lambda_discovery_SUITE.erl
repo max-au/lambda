@@ -33,9 +33,10 @@ basic(Config) when is_list(Config) ->
     %% start two peers and connect them
     CP = filename:dirname(code:which(lambda_discovery)),
     %% don't pmap, or linked nodes will die
+    VmArgs = ["-epmd_module", "lambda_discovery", "-kernel", "dist_auto_connect" , "never", "-pa", CP],
     [{ok, One}, {ok, Two}] = [
         peer:start_link(#{name => peer:random_name(), connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}) || _ <- lists:seq(1, 2)],
+        args => VmArgs}) || _ <- lists:seq(1, 2)],
     %% try to connect before adding the IP/Port to epmd, ensure failure
     ?assertNot(peer:call(One, net_kernel, connect_node, [Two])),
     %% now add the port/IP and ensure connection works
