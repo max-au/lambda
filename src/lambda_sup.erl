@@ -24,14 +24,14 @@ init([]) ->
     SupFlags = #{strategy => one_for_one, intensity => 2, period => 10},
     %% Lambda may run under a different supervision tree via included_applications
     App = case application:get_application() of {ok, A} -> A; undefined -> lambda end,
-    %% Discovery: if node is not started with -epmd_module lambda_discovery, use
-    %%  a fallback method via inet_db.
+    %% Discovery: don't start under lambda supervision if it's already
+    %%  set to be the epmd_module
     DiscoSpec = [
         #{
             id => lambda_discovery,
-            start => {lambda_discovery, start_link, []},
+            start => {lambda_discovery, start_link, [lambda]},
             modules => [lambda_discovery]
-        } || undefined <- [whereis(lambda_discovery)]
+        } || net_kernel:epmd_module() =/= lambda_discovery
     ],
     %% authority is not enabled by default, unless node name starts with `authority`
     [Name, _] = string:lexemes(atom_to_list(node()), "@"),

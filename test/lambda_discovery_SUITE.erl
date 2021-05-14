@@ -13,7 +13,10 @@
 %% Test cases exports
 -export([
     basic/0, basic/1,
-    epmd_fallback/0, epmd_fallback/1
+    epmd_fallback/0, epmd_fallback/1,
+    dynamic_restart/0, dynamic_restart/1,
+    late_start/0, late_start/1,
+    static_start/0, static_start/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -24,7 +27,7 @@ suite() ->
     [{timetrap, {seconds, 10}}].
 
 all() ->
-    [basic, epmd_fallback].
+    [basic, epmd_fallback, dynamic_restart, late_start, static_start].
 
 basic() ->
     [{doc, "Tests that get_node + set_node work together both directions"}].
@@ -75,3 +78,72 @@ epmd_fallback(Config) when is_list(Config) ->
     peer:stop(Peer1),
     gen:stop(Pid),
     ?assertEqual(undefined, whereis(erl_epmd)).
+
+dynamic_restart() ->
+    [{doc, "Tests dynamic distribution start/stop/restart with epmd_module"}].
+
+dynamic_restart(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    %% start node, not distributed, but with lambda_discovery
+    {ok, Peer} = peer:start_link(#{connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+    %% make the node distributed
+    {ok, _NC} = peer:call(Peer, net_kernel, start, [[peer:random_name(?FUNCTION_NAME), shortnames]]),
+    compare(Peer),
+    peer:stop(Peer).
+
+compare(Peer) ->
+    Node = peer:call(Peer, erlang, node, []),
+    ?assertNotEqual('nonode@nohost', Node),
+    %% ensure that lambda_discovery got the node rego correctly
+    Rego = peer:call(Peer, lambda_discovery, get_node, [Node]),
+    %% by default, erl_epmd fallback is enabled, - check that out!
+    [Name, Host] = string:lexemes(atom_to_list(Node), "@"),
+    {port, Port, _} = erl_epmd:port_please(Name, Host),
+    ?assertEqual(Port, maps:get(port, Rego)),
+    %% stop distribution
+    ok = peer:call(Peer, net_kernel, stop, []),
+    ?assertEqual('nonode@nohost', peer:call(Peer, erlang, node, [])),
+    %% restart distribution
+    {ok, _NC1} = peer:call(Peer, net_kernel, start, [[peer:random_name(?FUNCTION_NAME), shortnames]]),
+    Node1 = peer:call(Peer, erlang, node, []),
+    Rego1 = peer:call(Peer, lambda_discovery, get_node, [Node1]),
+    {port, Port1, _} = erl_epmd:port_please(hd(string:lexemes(atom_to_list(Node1), "@")), Host),
+    ?assertEqual(Port1, maps:get(port, Rego1), Rego1),
+    ok.
+
+late_start() ->
+    [{doc, "Tests lambda_discovery started at various stages"}].
+
+late_start(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    {ok, Peer} = peer:start_link(#{connection => standard_io, args => ["-pa", CP]}),
+    {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
+    %% make the node distributed
+    {ok, _NC} = peer:call(Peer, net_kernel, start, [[peer:random_name(?FUNCTION_NAME), shortnames]]),
+    compare(Peer),
+    peer:stop(Peer).
+
+static_start() ->
+    [{doc, "Tests static distribution with/without lambda_discovery"}].
+
+static_start(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    %% start node, not distributed, but with lambda_discovery
+    {ok, Peer} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME),
+        connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+    Node = peer:call(Peer, erlang, node, []),
+    ?assertNotEqual('nonode@nohost', Node),
+    %% ensure that lambda_discovery got the node rego
+    Rego = peer:call(Peer, lambda_discovery, get_node, [Node]),
+    ?assertNotEqual(error, Rego),
+    peer:stop(Peer),
+    %% try the same but with lambda_discovery starting later as an app
+    {ok, Peer1} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME),
+        connection => standard_io, args => ["-pa", CP]}),
+    Node1 = peer:call(Peer1, erlang, node, []),
+    {ok, _Apps} = peer:call(Peer1, application, ensure_all_started, [lambda]),
+    #{port := _Port, addr := _Ip} = peer:call(Peer1, lambda_discovery, get_node, [Node1]),
+    %% restart distribution
+    peer:stop(Peer1).

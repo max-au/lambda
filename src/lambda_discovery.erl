@@ -17,6 +17,7 @@
 
 %% External API
 -export([
+    start_link/1,
     set_node/2,
     del_node/1,
     get_node/1,
@@ -40,6 +41,7 @@
     init/1,
     handle_call/3,
     handle_cast/2,
+    handle_info/2,
     handle_continue/2,
     terminate/2
 ]).
@@ -67,10 +69,18 @@
 
 %% @doc
 %% Starts the server and links it to calling process. Required for
-%%  epmd interface.
--spec start_link() -> {ok, pid()} | ignore | {error,term()}.
+%%  epmd interface, and called when lambda_discovery is started
+%%  using "-epmd_module lambda_discovery" command line.
+-spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, #{epmd_fallback => epmd_fallback()}, []).
+
+%% @doc
+%% Starts the server, linked to calling process. Expected to be
+%%  used by "lambda" application supervisor.
+-spec start_link(lambda) -> {ok, pid()} | ignore | {error, term()}.
+start_link(lambda) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, #{mode => late, epmd_fallback => epmd_fallback()}, []).
 
 %% @doc Sets the mapping between node name and address to access the node.
 -spec set_node(node(), address()) -> ok.
@@ -83,8 +93,9 @@ del_node(Node) ->
     gen_server:call(?MODULE, {del, Node}).
 
 %% @doc Returns mapping of the node name to an address, using the
-%%      default selector.
--spec get_node(node()) -> address() | error.
+%%      default selector, or a boolean value requesting erl_epmd
+%%      fallback.
+-spec get_node(node()) -> address() | boolean().
 get_node(Node) ->
     gen_server:call(?MODULE, {get, Node}).
 
@@ -92,7 +103,7 @@ get_node(Node) ->
 %%      expected to work when sent to other nodes via distribution
 %%      channels. It is expected to return external node address,
 %%      if host is behind NAT.
--spec get_node() -> address() | error.
+-spec get_node() -> address() | boolean().
 get_node() ->
     get_node(node()).
 
@@ -174,13 +185,10 @@ address_please(Name, Host, AddressFamily) ->
             {ok, Addr, Port, ?EPMD_VERSION};
         #{addr := Addr, port := Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
             {ok, Addr, Port, ?EPMD_VERSION};
-        error ->
-            case epmd_fallback() of
-                true ->
-                    erl_epmd:address_please(Name, Host, AddressFamily);
-                false ->
-                    {error, not_found}
-            end
+        true ->
+            erl_epmd:address_please(Name, Host, AddressFamily);
+        false ->
+            {error, not_found}
     end.
 
 %%--------------------------------------------------------------------
@@ -188,38 +196,49 @@ address_please(Name, Host, AddressFamily) ->
 
 %% Discovery state: maps node names to addresses.
 %% TODO: support multiple endpoints (e.g. inet, inet6, ...)
--type state() :: #{node() => address()}.
+-record(lambda_discovery_state, {
+    nodes = #{} :: #{node() => address()},
+    %% erl_epmd started/linked to this process (when fallback is
+    %%  requested and lambda_discovery started by net_kernel)
+    erl_epmd = undefined :: undefined | pid(),
+    %% when distribution is running dynamically, net_kernel process
+    %%  is monitored to detect node becoming non-distributed
+    net_kernel = undefined :: undefined | pid(),
+    %% when epmd_fallback is true, lambda_discovery maintains IP
+    %%  address mappings in inet_db
+    epmd_fallback :: boolean()
+}).
+
+-type state() :: #lambda_discovery_state{}.
 
 %% @private
--spec init([]) -> {ok, state()}.
-init([]) ->
-    InitialState =
-        case epmd_fallback() of
-            true ->
-                %% epmd fallback enabled
-                case erl_epmd:start_link() of
-                    {ok, Pid} ->
-                        %% node will get it's own address during registration
-                        process_flag(trap_exit, true), %% otherwise terminate/2 is not called
-                        put(erl_epmd, Pid),
-                        #{};
-                    {error, {already_started, _Pid}} ->
-                        %% may be already registered, need to ask net_kernel
-                        try
-                            {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
-                                [{listen, _, _Proc, {net_address, {_Ip, Port}, _HostName, _Proto, Family}, _Mod}],
-                                _, _, _, _, _} = sys:get_state(net_kernel),
-                            {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(hostname(node()), Family),
-                            #{node() => #{addr => Ip, port => Port}}
-                        catch _:_ ->
-                            %% distribution not started yet
-                            #{}
-                        end
-                end;
-            false ->
-                #{}
-        end,
-    {ok, InitialState}.
+-spec init(#{mode => late, epmd_fallback := boolean()}) -> {ok, state()}.
+init(#{mode := late, epmd_fallback := Fallback}) ->
+    %% starting as a normal process (not with "-epmd_module")
+    case is_alive() of
+        true ->
+            %% net_kernel should be listening
+            NetKernel = whereis(net_kernel),
+            monitor(process, NetKernel),
+            {ok, #lambda_discovery_state{nodes = update_local_address(#{}),
+                net_kernel = NetKernel, epmd_fallback = Fallback}};
+        false ->
+            %% not (yet?) alive, need to be aware when node gets distributed, to grab the
+            %%  registration details
+            ok = net_kernel:monitor_nodes(true),
+            {ok, #lambda_discovery_state{epmd_fallback = Fallback}}
+    end;
+
+init(#{epmd_fallback := true}) ->
+    %% starting by erl_distribution, epmd fallback enabled
+    {ok, Pid} = erl_epmd:start_link(),
+    %% node will get it's own address during registration
+    process_flag(trap_exit, true), %% otherwise terminate/2 is not called
+    {ok, #lambda_discovery_state{erl_epmd = Pid, epmd_fallback = true}};
+
+init(#{epmd_fallback := false}) ->
+    %% starting by erl_distribution, no epmd fallback
+    {ok, #lambda_discovery_state{epmd_fallback = false}}.
 
 %% @private
 -spec handle_call(
@@ -227,61 +246,62 @@ init([]) ->
     {del, node()} | {get, node()} |
     {names, hostname()} |
     {register, string(), inet:port_number(), inet | inet6}, {pid(), reference()}, state()) -> {reply, term(), state()}.
-handle_call({set, Node, Address}, _From, State) ->
+handle_call({set, Node, Address}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fallback = EpmdFallback} = State) ->
     ?LOG_DEBUG("set ~s to ~200p", [Node, Address], #{domain => [lambda]}),
-    epmd_fallback() andalso inet_db:add_host(hostname(Node), maps:get(addr, Address)),
-    {reply, ok, State#{Node => Address}};
+    EpmdFallback andalso inet_db:add_host(hostname(Node), maps:get(addr, Address)),
+    {reply, ok, State#lambda_discovery_state{nodes = Nodes#{Node => Address}}};
 
-handle_call({del, Node}, _From, State) ->
+handle_call({del, Node}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fallback = EpmdFallback} = State) ->
     %% epmd fallback: if erl_epmd was started before
     %%  lambda_discovery, we can still trick erl_epmd into
     %%  using it by adjusting inet_db
-    epmd_fallback() andalso case maps:find(Node, State) of
-                                {ok, #{addr := Ip}} ->
-                                    inet_db:del_host(Ip);
-                                error ->
-                                    ok
-                            end,
-    {reply, ok, maps:remove(Node, State)};
+    EpmdFallback andalso case maps:find(Node, Nodes) of
+                             {ok, #{addr := Ip}} ->
+                                 inet_db:del_host(Ip);
+                             error ->
+                                 ok
+                         end,
+    {reply, ok, State#lambda_discovery_state{nodes = maps:remove(Node, Nodes)}};
 
-handle_call({get, Node}, _From, State) ->
+handle_call({get, Node}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fallback = EpmdFallback} = State) ->
     ?LOG_DEBUG("~p asking for ~s (~200p)", [element(1, _From),
-        case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, State, error)], #{domain => [lambda]}),
-    {reply, maps:get(Node, State, error), State};
+        case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, Nodes, error)], #{domain => [lambda]}),
+    {reply, maps:get(Node, Nodes, EpmdFallback), State};
 
-handle_call({names, HostName}, _From, State) ->
+handle_call({names, HostName}, _From, #lambda_discovery_state{nodes = Nodes} = State) ->
     %% find all Nodes of a HostName - need to iterate the entire node
     %%  map. This is a very rare request, so can be slow
-    Nodes = lists:filter(
+    Filtered = lists:filter(
         fun (Full) ->
             hostname(Full) =:= HostName
-        end, maps:keys(State)),
-    {reply, Nodes, State};
+        end, maps:keys(Nodes)),
+    {reply, Filtered, State};
 
-handle_call({register, Name, PortNo, Family}, _From, State) ->
-    ?LOG_DEBUG("registering ~s (~s) port ~bp", [Name, Family, PortNo], #{domain => [lambda]}),
-    %% fallback, registering in epmd
+handle_call({register, Name, PortNo, Family}, _From, #lambda_discovery_state{erl_epmd = ErlEpmd} = State) ->
+    ?LOG_DEBUG("registering ~s (~s) port ~b", [Name, Family, PortNo], #{domain => [lambda]}),
+    %% when erl_epmd is started by lambda_discovery, need to proxy the registration
     Creation =
-        case epmd_fallback() of
-            true ->
+        case ErlEpmd of
+            undefined ->
+                1;
+            _Pid ->
                 try
                     {ok, Creation1} = erl_epmd:register_node(Name, PortNo, Family),
                     Creation1
                 catch Class:Reason ->
-                    ?LOG_ERROR("epmd fallback failed with ~s:~p", [Class, Reason], #{domain => [lambda]}),
+                    ?LOG_ERROR("epmd registration fallback failed with ~s:~p", [Class, Reason], #{domain => [lambda]}),
                     1
-                end;
-            false ->
-                1
+                end
         end,
     {reply, {ok, Creation}, State, {continue, {register, PortNo, Family}}}.
 
 -spec handle_continue({register, inet:port_number(), inet | inet6}, state()) -> {noreply, state()}.
-handle_continue({register, PortNo, Family}, State) ->
+handle_continue({register, PortNo, Family}, #lambda_discovery_state{nodes = Nodes} = State) ->
     %% populate the local node address
     {ok, Host} = inet:gethostname(),
     Addr = local_addr(Host, Family),
-    {noreply, State#{node() => #{addr => Addr, port => PortNo, family => Family}}}.
+    Node = net_kernel:nodename(),
+    {noreply, State#lambda_discovery_state{nodes = Nodes#{Node => #{addr => Addr, port => PortNo, family => Family}}}}.
 
 %% @private
 -spec handle_cast(term(), state()) -> no_return().
@@ -289,14 +309,33 @@ handle_cast(_Cast, _State) ->
     error(badarg).
 
 %% @private
+-spec handle_info(term(), state()) -> {noreply, state()}.
+handle_info({nodeup, Node}, #lambda_discovery_state{nodes = Nodes, net_kernel = undefined} = State) when Node =:= node() ->
+    net_kernel:monitor_nodes(false),
+    NetKernel = whereis(net_kernel),
+    _MRef = monitor(process, NetKernel),
+    {noreply, State#lambda_discovery_state{nodes = update_local_address(Nodes), net_kernel = NetKernel}};
+handle_info({'DOWN', _MRef, process, NetKernel, _Reason}, #lambda_discovery_state{net_kernel = NetKernel} = State) ->
+    net_kernel:monitor_nodes(true),
+    {noreply, State#lambda_discovery_state{net_kernel = undefined}};
+%% ignore "late sends", when monitor_nodes(false) wasn't fast enough to switch it off
+handle_info({UpDown, _Node}, State) when UpDown =:= nodeup; UpDown =:= nodedown ->
+    {noreply, State}.
+
+%% @private
 -spec terminate(term(), state()) -> ok.
-terminate(_Reason, _State) ->
-    epmd_fallback() andalso get(erl_epmd) =/= undefined andalso
-        gen:stop(get(erl_epmd)),
-    ok.
+terminate(_Reason, #lambda_discovery_state{erl_epmd = ErlEpmd}) when is_pid(ErlEpmd) ->
+    gen:stop(ErlEpmd).
 
 %%--------------------------------------------------------------------
 %% Internal implementation
+
+update_local_address(Nodes) ->
+    {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
+        [{listen, _, _Proc, {net_address, {_Ip, Port}, _HostName, _Proto, Family}, _Mod}],
+        _, _, _, _, _} = sys:get_state(net_kernel),
+    {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(hostname(node()), Family),
+    Nodes#{node() => #{addr => Ip, port => Port}}.
 
 hostname(Node) ->
     tl(string:lexemes(atom_to_list(Node), "@")).
