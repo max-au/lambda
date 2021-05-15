@@ -16,7 +16,8 @@
 
 %% Test cases exports
 -export([
-    basic/0, basic/1
+    basic/0, basic/1,
+    broker_down/0, broker_down/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -25,7 +26,7 @@ suite() ->
     [{timetrap, {seconds, 10}}].
 
 all() ->
-    [basic].
+    [basic, broker_down].
 
 init_per_suite(Config) ->
     {ok, Physical} = lambda_discovery:start_link(),
@@ -56,11 +57,27 @@ basic() ->
 basic(Config) when is_list(Config) ->
     Cap = 100,
     BuyId = 1,
-    lambda_exchange:sell(proplists:get_value(exchange, Config), contact, 0, Cap, #{}),
-    lambda_exchange:buy(proplists:get_value(exchange, Config), BuyId, Cap, #{}),
+    Exch = proplists:get_value(exchange, Config),
+    lambda_exchange:sell(Exch, 0, Cap, #{}, contact),
+    lambda_exchange:buy(Exch, BuyId, Cap, #{}),
     receive
-        {order, BuyId, ?FUNCTION_NAME, [{contact, Cap, #{}}]} ->
+        {complete_order, ?FUNCTION_NAME, BuyId, [{contact, Cap, #{}}]} ->
             ok;
         Other ->
             ?assert(false, Other)
     end.
+
+broker_down() ->
+    [{doc, "Ensures that broker down wipes out orders from exchange"}].
+
+broker_down(Config) when is_list(Config) ->
+    Exch = proplists:get_value(exchange, Config),
+    Broker = spawn(
+        fun () -> lambda_exchange:sell(Exch, 0, 1, #{}, ?FUNCTION_NAME), receive after infinity -> ok end end),
+    %% ensure exchange has the order
+    lambda_test:sync(Exch),
+    ?assertMatch([{order, _, 1, Broker, _, _, _}], lambda_exchange:orders(Exch, #{type => sell})),
+    %% kill the broker
+    exit(Broker, kill),
+    lambda_test:sync(Exch),
+    ?assertEqual([], lambda_exchange:orders(Exch, #{})).

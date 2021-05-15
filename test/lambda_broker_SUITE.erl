@@ -15,8 +15,8 @@
 
 %% Test cases exports
 -export([
-    basic/0, basic/1,
     trade/0, trade/1,
+    trade_down/0, trade_down/1,
     peer/0, peer/1
 ]).
 
@@ -29,7 +29,7 @@ all() ->
     [{group, local}, {group, cluster}].
 
 groups() ->
-    [{local, [basic, trade]}, {cluster, [peer]}].
+    [{local, [trade, trade_down]}, {cluster, [peer]}].
 
 init_per_group(local, Config) ->
     %% start discovery
@@ -65,38 +65,6 @@ start_broker(Auth) ->
 %%--------------------------------------------------------------------
 %% Test Cases
 
-basic() ->
-    [{doc, "Tests authority discovery within a single Erlang node"}].
-
-basic(Config) when is_list(Config) ->
-    %% start root (empty) authority
-    {AuthPid, Bootstrap} = start_authority(#{}),
-    %% start a number of (unnamed) brokers pointing at authority
-    Brokers = [start_broker(Bootstrap) || _ <- lists:seq(1, 8)],
-    %% ensure authorities finished processing from broker point of view
-    [lambda_test:sync_via(Broker, AuthPid) || Broker <- Brokers],
-    %% ensure authority has discovered all of them
-    ?assertEqual(lists:sort(Brokers), lists:sort(lambda_authority:brokers(AuthPid))),
-    [?assertEqual([AuthPid], lambda_broker:authorities(R)) || R <- Brokers],
-    %% start second authority
-    {Auth2, _} = start_authority(Bootstrap),
-    %% let authorities sync. White-box testing here, knowing the protocol.
-    lambda_test:sync_via(Auth2, AuthPid),
-    lambda_test:sync_via(AuthPid, Auth2),
-    lambda_test:sync(Brokers),
-    %% ensure both authorities have the same list of connected processes
-    ?assertEqual(lists:sort(lambda_authority:brokers(AuthPid)),
-        lists:sort(lambda_authority:brokers(Auth2))),
-    %% ensure authorities know each other
-    Auths = lists:sort([AuthPid, Auth2]),
-    [?assertEqual(Auths, lists:sort(lambda_authority:authorities(AP))) || AP <- Auths],
-    %% ensure brokers know authorities too
-    lambda_test:sync(Brokers),
-    [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Brokers],
-    %% all done, stop now
-    [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2]].
-
-
 trade() ->
     [{doc, "Sell and buy the same quantity through the same broker"}].
 
@@ -112,7 +80,10 @@ trade(Config) when is_list(Config) ->
     ?assertEqual(ok, lambda_broker:buy(Reg, ?FUNCTION_NAME, Quantity)),
     %% receive the order
     receive
-        {order, [{Seller, Quantity, #{}}]} -> ok;
+        {complete_order, [{Seller, Quantity, #{}}]} ->
+            %% ensure authority still knows about the module
+            ?assertEqual([?FUNCTION_NAME], lambda_authority:modules(AuthPid)),
+            ok;
         Other -> ?assert(false, {"unexpected receive match", Other})
     after 2500 ->
         ?assert(false, "order was not executed in a timely fashion")
@@ -120,6 +91,35 @@ trade(Config) when is_list(Config) ->
     %% exit the seller
     exit(Seller, normal),
     [gen_server:stop(P) || P <- [Reg, AuthPid]].
+
+trade_down() ->
+    [{doc, "Test that orders are discarded when PLB/listener go down"}].
+
+trade_down(Config) when is_list(Config) ->
+    {AuthPid, Bootstrap} = start_authority(#{}),
+    Broker = start_broker(Bootstrap),
+    %% spawned process sells 100 through the broker
+    Seller = spawn(
+        fun () -> lambda_broker:sell(Broker, ?FUNCTION_NAME, 1), receive after infinity -> ok end end),
+    %% ensure it reached the exchange
+    lambda_test:sync([Broker, AuthPid, Broker]),
+    [Exch] = lambda_broker:exchanges(Broker, ?FUNCTION_NAME),
+    ?assertMatch([{order, _, 1, Broker, _, _, _}], lambda_exchange:orders(Exch, #{type => sell})),
+    %% terminate seller
+    exit(Seller, kill),
+    %% ensure orders disappeared from broker
+    ?assertEqual([], lambda_broker:orders(Broker, #{type => sell})),
+    %% ... and exchange
+    ?assertEqual([], lambda_exchange:orders(Exch, #{type => sell})),
+    %% perform same steps, now for buy order
+    Buyer = spawn(
+        fun () -> lambda_broker:buy(Broker, ?FUNCTION_NAME, 2), receive after infinity -> ok end end),
+    lambda_test:sync([Broker, Exch, Broker]),
+    ?assertMatch([{order, _, 2, Broker, _, _, _}], lambda_exchange:orders(Exch, #{type => buy})),
+    exit(Buyer, kill),
+    lambda_test:sync([Broker, Exch, Broker]),
+    ?assertEqual([], lambda_exchange:orders(Exch, #{type => buy})),
+    [gen_server:stop(P) || P <- [Broker, AuthPid]].
 
 %%--------------------------------------------------------------------
 %% Real Cluster Test Cases

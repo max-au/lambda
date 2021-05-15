@@ -13,6 +13,7 @@
 
 %% Test cases exports
 -export([
+    local/0, local/1,
     basic/0, basic/1,
     proper/0, proper/1,
     reconnect/0, reconnect/1,
@@ -47,7 +48,7 @@ end_per_suite(Config) ->
     Config.
 
 all() ->
-    [basic, reconnect, stop_authority, proper].
+    [local, basic, reconnect, stop_authority, proper].
 
 %%--------------------------------------------------------------------
 %% Convenience & data
@@ -140,6 +141,49 @@ verify_topo(Boot, TotalCount, AuthCount) ->
 
 %%--------------------------------------------------------------------
 %% Test Cases
+
+local() ->
+    [{doc, "Tests authority discovery within a single Erlang node"}].
+
+local(Config) when is_list(Config) ->
+    %% start discovery
+    {ok, Disco} = lambda_discovery:start_link(),
+    LocalFakeAddress = #{addr => {127, 0, 0, 1}, port => 1},
+    lambda_discovery:set_node(node(), LocalFakeAddress), %% not distributed
+    %% start root (empty) authority
+    {ok, AuthPid} = gen_server:start_link(lambda_authority, [], []),
+    lambda_authority:peers(AuthPid, #{}),
+    Bootstrap = #{AuthPid => lambda_discovery:get_node()},
+    %% start a number of (unnamed) brokers pointing at authority
+    Brokers = [
+        begin
+            {ok, BrokerPid} = gen_server:start_link(lambda_broker, [], []),
+            lambda_broker:authorities(BrokerPid, #{AuthPid => LocalFakeAddress}),
+            BrokerPid
+        end || _ <- lists:seq(1, 8)],
+    %% ensure authorities finished processing from broker point of view
+    [lambda_test:sync_via(Broker, AuthPid) || Broker <- Brokers],
+    %% ensure authority has discovered all of them
+    ?assertEqual(lists:sort(Brokers), lists:sort(lambda_authority:brokers(AuthPid))),
+    [?assertEqual([AuthPid], lambda_broker:authorities(R)) || R <- Brokers],
+    %% start second authority
+    {ok, Auth2} = gen_server:start_link(lambda_authority, [], []),
+    lambda_authority:peers(Auth2, Bootstrap),
+    %% let authorities sync. White-box testing here, knowing the protocol.
+    lambda_test:sync_via(Auth2, AuthPid),
+    lambda_test:sync_via(AuthPid, Auth2),
+    lambda_test:sync(Brokers),
+    %% ensure both authorities have the same list of connected processes
+    ?assertEqual(lists:sort(lambda_authority:brokers(AuthPid)),
+        lists:sort(lambda_authority:brokers(Auth2))),
+    %% ensure authorities know each other
+    Auths = lists:sort([AuthPid, Auth2]),
+    [?assertEqual(Auths, lists:sort(lambda_authority:authorities(AP))) || AP <- Auths],
+    %% ensure brokers know authorities too
+    lambda_test:sync(Brokers),
+    [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Brokers],
+    %% all done, stop now
+    [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2, Disco]].
 
 basic() ->
     [{doc, "Make a single release, start several copies of it using customised settings"},
@@ -351,7 +395,7 @@ postcondition(#cluster_state{auth = Auth, brokers = Brokers}, {call, ?MODULE, ch
         _NotOk ->
             [
                 io:format(standard_error, "Authority ~p failed connections to brokers ~200p~nReason: ~200p~n", [A, Peers, Error])
-                || {A, Error} <- lists:zip(maps:keys(Auth), Connected)],
+                || {A, Error} <- lists:zip(maps:keys(Auth), Connected), Error =/= ok],
             false
     end;
 

@@ -19,7 +19,10 @@
     cast/4,
     call/4,
     capacity/1,
-    meta/1
+    meta/1,
+
+    %% internal API for broker
+    complete_order/2
 ]).
 
 -behaviour(gen_server).
@@ -110,6 +113,11 @@ capacity(Module) ->
 -spec meta(atom() | pid()) -> module().
 meta(Srv) ->
     gen_server:call(Srv, meta, infinity).
+
+%% @doc Invoked by a broker, when order has been completed
+-spec complete_order(lambda:dst(), [{pid(), Quantity :: pos_integer(), Meta :: lambda:meta()}]) -> ok.
+complete_order(Srv, Servers) ->
+    erlang:send(Srv, {complete_order, Servers}, []).
 
 %%--------------------------------------------------------------------
 %% Weighted random sampling: each server process has a weight.
@@ -240,15 +248,15 @@ handle_info({demand, Demand, Server}, #lambda_plb_state{pid_to_index = Pti, inde
             end
     end;
 
-handle_info({order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Module, meta = Waiting} = State) when is_list(Waiting) ->
+handle_info({complete_order, [{_, _, Meta} | _] = Servers}, #lambda_plb_state{module = Module, meta = Waiting} = State) when is_list(Waiting) ->
     ?LOG_DEBUG("meta ~200p received for ~200p", [Meta, Waiting], #{domain => [lambda]}),
     %% start trapping exits just before compiling proxy, to ensure terminate/2 is
     %%  called when PLB shuts down
     process_flag(trap_exit, true),
     Module = compile_proxy(Module, Meta),
     [gen:reply(To, Meta) || To <- Waiting],
-    handle_info({order, Servers}, State#lambda_plb_state{meta = maps:get(module, Meta)});
-handle_info({order, Servers}, #lambda_plb_state{} = State) ->
+    handle_info({complete_order, Servers}, State#lambda_plb_state{meta = maps:get(module, Meta)});
+handle_info({complete_order, Servers}, #lambda_plb_state{} = State) ->
     %% broker sent an update to us, order was (partially?) fulfilled, connect to provided servers
     ?LOG_DEBUG("found servers: ~200p", [Servers], #{domain => [lambda]}),
     Self = self(),

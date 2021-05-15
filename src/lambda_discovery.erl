@@ -338,7 +338,8 @@ update_local_address(Nodes) ->
     Nodes#{node() => #{addr => Ip, port => Port}}.
 
 hostname(Node) ->
-    tl(string:lexemes(atom_to_list(Node), "@")).
+    [_, Host] = string:lexemes(atom_to_list(Node), "@"),
+    Host.
 
 epmd_fallback() ->
     application:get_env(lambda, epmd_fallback, true).

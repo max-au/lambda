@@ -7,7 +7,7 @@
 %%  * server -> broker: {sell, Module, Seller, Capacity}
 %%  * server -> broker: {'DOWN', ...}
 %%  * plb -> broker: {buy, Module, Buyer, Quantity}
-%%  * broker -> plb: {order, Sellers}
+%%  * broker -> plb: {complete_order, Sellers}
 %%  * plb -> broker: {'DOWN', ...}
 %%  * exchange -> broker: remote exchange executes the order (fully or partially)
 %%  * exchange -> broker: {'DOWN', ...}
@@ -30,7 +30,16 @@
     sell/4,
     buy/3,
     buy/4,
-    cancel/2
+    cancel/2,
+
+    %% Internal API for exchange
+    complete_order/4
+]).
+
+%% Introspection API
+-export([
+    exchanges/2,
+    orders/2
 ]).
 
 -behaviour(gen_server).
@@ -109,12 +118,32 @@ buy(Srv, Name, Quantity, Meta) ->
 cancel(Srv, Proc) ->
     gen_server:cast(Srv, {cancel, Proc}).
 
+%% @doc Called by an exchange, to notify buyer's seller of a
+%%      successful order completion.
+-spec complete_order(lambda:dst(), module(), non_neg_integer(), []) -> ok | noconnect | nosuspend.
+complete_order(Srv, Module, Id, Sellers) ->
+    erlang:send(Srv, {complete_order, Module, Id, Sellers}, [noconnect, nosuspend]).
+
+%%--------------------------------------------------------------------
+%% Introspection API
+-spec exchanges(lambda:dst(), module()) -> [pid()].
+exchanges(Srv, Module) ->
+    gen_server:call(Srv, {exchanges, Module}).
+
+-type filter() :: #{
+    type => sell | buy
+}.
+
+-spec orders(lambda:dst(), filter()) -> [pid()].
+orders(Srv, Filters) ->
+    gen_server:call(Srv, {orders, Filters}).
+
 %%--------------------------------------------------------------------
 %% Implementation (gen_server)
 
 -type order() :: {
-    Id :: non_neg_integer(),
     buy | sell,
+    Id :: non_neg_integer(),
     pid(),
     Quantity :: pos_integer(),
     Meta :: sell_meta() | buy_meta(),
@@ -146,20 +175,27 @@ init([]) ->
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
     ?LOG_DEBUG("reporting authorities ~200p", [maps:keys(Auth)], #{domain => [lambda]}),
-    {reply, maps:keys(Auth), State}.
+    {reply, maps:keys(Auth), State};
+handle_call({exchanges, Module}, _From, #lambda_broker_state{exchanges = Exch} = State) ->
+    ?LOG_DEBUG("reporting exchanges for ~s ~200p", [Module, maps:get(Module, Exch, [])], #{domain => [lambda]}),
+    {reply, maps:get(Module, Exch, []), State};
+handle_call({orders, Filters}, _From, #lambda_broker_state{orders = Orders} = State) ->
+    ?LOG_DEBUG("reporting orders for ~200p", [Filters], #{domain => [lambda]}),
+    {reply, filter_orders(Orders, Filters), State}.
 
-handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = Self, next_id = Id, exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
+handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = Self, next_id = Id,
+    exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
     when Type =:= buy; Type =:= sell ->
     case maps:find(Trader, Monitors) of
         {ok, {_Type, Module, _MRef}} ->
             ?LOG_DEBUG("~s received updated quantity from ~p for ~s (~b)", [Type, Trader, Module, Quantity], #{domain => [lambda]}),
             %% update outstanding sell order with new Quantity
             Outstanding = maps:get(Module, Orders),
-            {XId, Type, Trader, _XQ, XMeta, XPrev} = lists:keyfind(Trader, 3, Outstanding),
-            NewOrders = lists:keyreplace(Trader, 3, Outstanding, {XId, Type, Trader, Quantity, XMeta, XPrev}),
+            {Type, XId, Trader, _XQ, XMeta, XPrev} = lists:keyfind(Trader, 3, Outstanding),
+            NewOrders = lists:keyreplace(Trader, 3, Outstanding, {Type, XId, Trader, Quantity, XMeta, XPrev}),
             %% notify known exchanges
             Exch = maps:get(Module, Exchanges, []),
-            [lambda_exchange:sell(Ex, {Trader, Self}, XId, Quantity, XMeta) || Ex <- Exch],
+            [lambda_exchange:sell(Ex, XId, Quantity, XMeta, {Trader, Self}) || Ex <- Exch],
             {noreply, State#lambda_broker_state{
                 orders = Orders#{Module => NewOrders}}};
         error ->
@@ -175,12 +211,12 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
                     [lambda_exchange:buy(Ex, Id, Quantity, Meta) || Ex <- Exch];
                 {ok, Exch} when Type =:= sell ->
                     %% already subscribed, send orders to known exchanges
-                    [lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, Meta) || Ex <- Exch];
+                    [lambda_exchange:sell(Ex, Id, Quantity, Meta, {Trader, Self}) || Ex <- Exch];
                 error ->
                     %% not subscribed to any exchanges yet
                     subscribe_exchange(Authority, Module)
             end,
-            NewOrders = [{Id, Type, Trader, Quantity, Meta, []} | Existing],
+            NewOrders = [{Type, Id, Trader, Quantity, Meta, []} | Existing],
             {noreply, State#lambda_broker_state{next_id = Id + 1, monitors = NewMons,
                 orders = Orders#{Module => NewOrders}}}
     end;
@@ -221,25 +257,25 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
         ?LOG_DEBUG("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding], #{domain => [lambda]}),
     [case Type of
          buy -> lambda_exchange:buy(Ex, Id, Quantity, Meta);
-         sell -> lambda_exchange:sell(Ex, {Trader, Self}, Id, Quantity, Meta)
-     end || Ex <- NewExch, {Id, Type, Trader, Quantity, Meta, Prev} <- Outstanding,
+         sell -> lambda_exchange:sell(Ex, Id, Quantity, Meta, {Trader, Self})
+     end || Ex <- NewExch, {Type, Id, Trader, Quantity, Meta, Prev} <- Outstanding,
         lists:member(Ex, Prev) =:= false],
     {noreply, State#lambda_broker_state{exchanges = Exchanges#{Module => NewExch ++ Known}}};
 
 %% order complete (probably a partial completion, or a duplicate)
-handle_info({order, Id, Module, Sellers}, #lambda_broker_state{orders = Orders} = State) ->
+handle_info({complete_order, Module, Id, Sellers}, #lambda_broker_state{orders = Orders} = State) ->
     %% this is HORRIBLE codestyle, TODO: rewrite in Erlang, not in C :)
     case maps:find(Module, Orders) of
         {ok, Outstanding} ->
             %% find the order
-            case lists:keysearch(Id, 1, Outstanding) of
-                {value, {Id, buy, Buyer, Quantity, BuyMeta, Previous}} ->
+            case lists:keysearch(Id, 2, Outstanding) of
+                {value, {buy, Id, Buyer, Quantity, BuyMeta, Previous}} ->
                     ?LOG_DEBUG("order reply: id ~b for ~p with ~200p", [Id, Buyer, Sellers], #{domain => [lambda]}),
                     %% notify buyers if any order complete
                     case notify_buyer(Buyer, Quantity, Sellers, Previous, []) of
                         {QuantityLeft, AlreadyUsed} ->
                             %% incomplete, keep current state (updating remaining quantity)
-                            Out = lists:keyreplace(Id, 1, Outstanding, {Id, buy, Buyer, QuantityLeft, BuyMeta, AlreadyUsed}),
+                            Out = lists:keyreplace(Id, 1, Outstanding, {buy, Id, Buyer, QuantityLeft, BuyMeta, AlreadyUsed}),
                             {noreply, State#lambda_broker_state{orders = Orders#{Module => Out}}};
                         done ->
                             %% complete, may trigger exchange subscription removal
@@ -313,14 +349,14 @@ cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors
             Demonitor andalso erlang:demonitor(MRef, [flush]),
             %% enumerate to find the order
             case maps:get(Module, Orders) of
-                [{Id, Type, Pid, _Q, _Meta, _Prev}] ->
+                [{Type, Id, Pid, _Q, _Meta, _Prev}] ->
                     cancel_exchange_order(Type, Id, maps:get(Module, Exchanges)),
                     %% no orders left for this module, unsubscribe from exchanges
                     broadcast(State#lambda_broker_state.authority, {cancel, Module, self()}),
                     State#lambda_broker_state{orders = maps:remove(Module, Orders), monitors = NewMonitors};
                 Outstanding ->
                     %% other orders are still in
-                    {value, {Id, Type, Pid, _Q, _Meta, _Prev}, NewOut} = lists:keytake(Pid, 3, Outstanding),
+                    {value, {Type, Id, Pid, _Q, _Meta, _Prev}, NewOut} = lists:keytake(Pid, 3, Outstanding),
                     cancel_exchange_order(Type, Id, maps:get(Module, Exchanges)),
                     State#lambda_broker_state{orders = Orders#{Module => NewOut}, monitors = NewMonitors}
             end
@@ -363,4 +399,16 @@ connect_sellers(Buyer, Contacts) ->
     %% filter our contact information
     Servers = [{Pid, Quantity, Meta} || {{Pid, _Addr}, Quantity, Meta} <- Contacts],
     %% pass on order to the actual buyer
-    Buyer ! {order, Servers}.
+    lambda_plb:complete_order(Buyer, Servers).
+
+%%--------------------------------------------------------------------
+%% Introspection internals
+filter_orders(Orders, #{module := Mod} = Filters) ->
+    filter_type(maps:get(Mod, Orders, []), Filters);
+filter_orders(Orders, Filters) ->
+    filter_type(maps:values(Orders), Filters).
+
+filter_type(Orders, #{type := Type}) ->
+    [Order || Order <- Orders, element(1, Order) =:= Type];
+filter_type(Orders, _Filters) ->
+    Orders.

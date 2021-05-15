@@ -36,9 +36,14 @@
 %% API
 -export([
     start_link/0,
+    peers/2
+]).
+
+%% Introspection API
+-export([
     authorities/1,
     brokers/1,
-    peers/2
+    modules/1
 ]).
 
 -behaviour(gen_server).
@@ -64,6 +69,14 @@ start_link() ->
 %%--------------------------------------------------------------------
 %% API
 
+%% @doc adds a map of potential authority peers
+-spec peers(lambda:dst(), #{lambda:location() => lambda_discovery:address()}) -> ok.
+peers(Authority, Peers) ->
+    Authority ! {peers, Peers},
+    ok.
+
+%% Introspection API
+
 %% @doc returns a list of authorities currently connected.
 -spec authorities(lambda:dst()) -> [pid()].
 authorities(Authority) ->
@@ -75,11 +88,10 @@ authorities(Authority) ->
 brokers(Authority) ->
     gen_server:call(Authority, brokers).
 
-%% @doc adds a map of potential authority peers
--spec peers(lambda:dst(), #{lambda:location() => lambda_discovery:address()}) -> ok.
-peers(Authority, Peers) ->
-    Authority ! {peers, Peers},
-    ok.
+%% @doc returns a list of modules known to this authority
+-spec modules(lambda:dst()) -> [module()].
+modules(Authority) ->
+    gen_server:call(Authority, modules).
 
 %%--------------------------------------------------------------------
 %% Cluster authority
@@ -107,7 +119,10 @@ handle_call(authorities, _From, #lambda_authority_state{authorities = Auth} = St
     {reply, maps:keys(Auth), State};
 
 handle_call(brokers, _From, #lambda_authority_state{brokers = Brokers} = State) ->
-    {reply, maps:keys(Brokers), State}.
+    {reply, maps:keys(Brokers), State};
+
+handle_call(modules, _From, #lambda_authority_state{exchanges = Exch} = State) ->
+    {reply, maps:keys(Exch), State}.
 
 handle_cast(_Req, _State) ->
     erlang:error(notsup).
