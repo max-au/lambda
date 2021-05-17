@@ -7,6 +7,7 @@
 %% Test server callbacks
 -export([
     all/0,
+    groups/0,
     init_per_suite/1,
     end_per_suite/1
 ]).
@@ -14,6 +15,7 @@
 %% Test cases exports
 -export([
     local/0, local/1,
+    remote/0, remote/1,
     basic/0, basic/1,
     proper/0, proper/1,
     reconnect/0, reconnect/1,
@@ -47,8 +49,11 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     Config.
 
+groups() ->
+    [{parallel, [parallel], [local, remote, reconnect, stop_authority]}].
+
 all() ->
-    [local, basic, reconnect, stop_authority, proper].
+    [{group, parallel}, basic, proper].
 
 %%--------------------------------------------------------------------
 %% Convenience & data
@@ -184,6 +189,37 @@ local(Config) when is_list(Config) ->
     [?assertEqual(Auths, lists:sort(lambda_broker:authorities(R))) || R <- Brokers],
     %% all done, stop now
     [gen:stop(Pid) || Pid <- Brokers ++ [AuthPid, Auth2, Disco]].
+
+remote() ->
+    [{doc, "Tests two authority nodes on two localhost addresses"}].
+
+remote(Config) when is_list(Config) ->
+    %% start 2 authorities, making dist to listen on two localhost IP
+    %%  addresses
+    Boot = proplists:get_value(boot, Config),
+    Common = ["+S", "2:2"],
+    Auth1 = lambda_test:start_node(?FUNCTION_NAME, Boot, undefined,
+        Common ++ ["-kernel", "inet_dist_use_interface", "{127,0,0,1}"], true),
+    Addr1 = peer:call(Auth1, lambda_discovery, get_node, []),
+    %% check that IP actually took effect
+    ?assertEqual({127, 0, 0, 1}, maps:get(addr, Addr1), Addr1),
+    %% boot second authority
+    BootSpec = {static, #{{lambda_authority, Auth1} => Addr1}},
+    Auth2 = lambda_test:start_node(?FUNCTION_NAME, Boot, BootSpec,
+        Common, true),
+    %% start a worker node that only knows about first authority
+    Worker = lambda_test:start_node(?FUNCTION_NAME, Boot, BootSpec,
+        Common, false),
+    %% ensure exchanges happened
+    lambda_test:sync([{Worker, lambda_bootstrap}, {Worker, lambda_broker},
+        {Auth1, lambda_authority}, {Auth2, lambda_authority}, {Worker, lambda_broker}]),
+    %% ensure it also knows the second
+    WorkerAuths = peer:call(Worker, lambda_broker, authorities, [lambda_broker]),
+    ?assertEqual(2, length(WorkerAuths), WorkerAuths),
+    ?assertEqual(lists:sort([Auth1, Auth2]), lists:sort([node(A) || A <- WorkerAuths])),
+    %% cleanup
+    lambda_async:pmap([{peer, stop, [N]} || N <- [Worker, Auth1, Auth2]]),
+    ok.
 
 basic() ->
     [{doc, "Make a single release, start several copies of it using customised settings"},

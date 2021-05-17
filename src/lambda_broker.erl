@@ -325,7 +325,7 @@ discover(Existing, New, Self) ->
                 ok;
             (Location, Addr) ->
                 set_node(Location, Addr),
-                Location ! {discover, self(), Self}
+                lambda_authority:discover(Location, Self)
         end, New).
 
 set_node(Location, Addr) when is_pid(Location) ->

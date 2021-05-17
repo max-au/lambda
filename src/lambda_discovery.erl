@@ -278,7 +278,8 @@ handle_call({names, HostName}, _From, #lambda_discovery_state{nodes = Nodes} = S
     {reply, Filtered, State};
 
 handle_call({register, Name, PortNo, Family}, _From, #lambda_discovery_state{erl_epmd = ErlEpmd} = State) ->
-    ?LOG_DEBUG("registering ~s (~s) port ~b", [Name, Family, PortNo], #{domain => [lambda]}),
+    %% cannot use OTP logger here, because not is just being started
+    %% ?LOG_DEBUG("registering ~s (~s) port ~b", [Name, Family, PortNo], #{domain => [lambda]}),
     %% when erl_epmd is started by lambda_discovery, need to proxy the registration
     Creation =
         case ErlEpmd of
@@ -332,10 +333,12 @@ terminate(_Reason, #lambda_discovery_state{erl_epmd = ErlEpmd}) when is_pid(ErlE
 
 update_local_address(Nodes) ->
     {state, _Node, _ShortLong, _Tick, _, _SysDist, _, _, _,
-        [{listen, _, _Proc, {net_address, {_Ip, Port}, _HostName, _Proto, Family}, _Mod}],
+        [{listen, _, _Proc, {net_address, {_Ip, Port}, HostName, _Proto, Family}, _Mod}],
         _, _, _, _, _} = sys:get_state(net_kernel),
-    {ok, #hostent{h_addr_list = [Ip | _]}} = inet:gethostbyname(hostname(node()), Family),
-    Nodes#{node() => #{addr => Ip, port => Port}}.
+    Ip = local_addr(HostName, Family),
+    Addr = #{addr => Ip, port => Port, family => Family},
+    ?LOG_DEBUG("resolved ~s local address to ~p:~b", [Family, Ip, Port], #{domain => [lambda]}),
+    Nodes#{node() => Addr}.
 
 hostname(Node) ->
     [_, Host] = string:lexemes(atom_to_list(Node), "@"),

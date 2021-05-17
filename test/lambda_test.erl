@@ -29,8 +29,8 @@
 sync(List) when is_list(List) ->
     [sync(El) || El <- List],
     ok;
-sync({Peer, Pid}) when is_pid(Pid) ->
-    peer:call(Peer, sys, get_state, [Pid]),
+sync({Peer, PidOrName}) when is_pid(PidOrName); is_atom(PidOrName) ->
+    peer:call(Peer, sys, get_state, [PidOrName]),
     ok;
 sync(Pid) when is_pid(Pid) ->
     sys:get_state(Pid),
@@ -146,6 +146,7 @@ start_node_link(TestId, Boot, Bootspec, CmdLine, Authority) ->
 start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
     %% in tests, use short names by default
     Name = random_name(TestId, Authority),
+    CP = filename:dirname(code:which(lambda)),
     TestCP = filename:dirname(code:which(?MODULE)),
     ExtraArgs = if
             Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))];
@@ -157,7 +158,7 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
             "-setcookie", "lambda",
             "-connect_all", "false",
             "-epmd_module", "lambda_discovery",
-            "-pa", TestCP] ++ ExtraArgs ++ CmdLine}),
+            "-pa", TestCP, "-pa", CP] ++ ExtraArgs ++ CmdLine}),
     %% wait for connection?
     case Bootspec of
         {static, Map} when is_map(Map) ->

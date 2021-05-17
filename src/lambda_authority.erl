@@ -36,7 +36,8 @@
 %% API
 -export([
     start_link/0,
-    peers/2
+    peers/2,
+    discover/2
 ]).
 
 %% Introspection API
@@ -73,6 +74,11 @@ start_link() ->
 -spec peers(lambda:dst(), #{lambda:location() => lambda_discovery:address()}) -> ok.
 peers(Authority, Peers) ->
     Authority ! {peers, Peers},
+    ok.
+
+-spec discover(lambda:dst(), lambda_discovery:address()) -> ok.
+discover(Authority, Contact) ->
+    Authority ! {discover, self(), Contact},
     ok.
 
 %% Introspection API
@@ -129,8 +135,8 @@ handle_cast(_Req, _State) ->
 
 %% bootstrap: try to discover not yet known Peers
 handle_info({peers, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
-    ?LOG_DEBUG("NEW PEERS ~200p", [maps:without(maps:keys(Auth), Peers)], #{domain => [lambda]}),
-    discover(Auth, Peers),
+    ?LOG_DEBUG("NEW AUTH PEERS ~200p", [maps:without(maps:keys(Auth), Peers)], #{domain => [lambda]}),
+    find_peers(Auth, Peers),
     {noreply, State};
 
 %% syn: initiator is discovering us, sending a list of Peers known to it
@@ -143,7 +149,7 @@ handle_info({syn, Initiator, Peers}, #lambda_authority_state{authorities = Auth}
     Initiator ! {ack, self(), Auth},
     %% initiator may have sent us a few more peers we are not aware about
     NewAuth = Auth#{Initiator => Contact},
-    discover(NewAuth, Peers),
+    find_peers(NewAuth, Peers),
     %% tell known brokers to look for a new authority
     [lambda_broker:authorities(Broker, #{Initiator => Contact})
         || Broker <- maps:keys(State#lambda_authority_state.brokers)],
@@ -209,7 +215,7 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason}, #lambda_authority_state{auth
 %%--------------------------------------------------------------------
 %% Internal implementation
 
-discover(Existing, New) ->
+find_peers(Existing, New) ->
     maps:map(
         fun (Location, _Addr) when is_map_key(Location, Existing) ->
                 ok;
