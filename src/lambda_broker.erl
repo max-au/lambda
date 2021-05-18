@@ -152,7 +152,7 @@ orders(Srv, Filters) ->
 
 -record(lambda_broker_state, {
     %% self address (used by authorities)
-    self :: lambda_discovery:address(),
+    self :: undefined | lambda_discovery:address(),
     %% authority processes + authority addresses to peer discovery
     authority = #{} :: #{pid() => lambda_discovery:address()},
     %% exchanges connections
@@ -169,8 +169,7 @@ orders(Srv, Filters) ->
 
 -spec init([]) -> {ok, state()}.
 init([]) ->
-    Self = lambda_discovery:get_node(),
-    {ok, #lambda_broker_state{self = Self}}.
+    {ok, cache_self(#lambda_broker_state{})}.
 
 %% debug: find authorities known
 handle_call(authorities, _From, #lambda_broker_state{authority = Auth} = State) ->
@@ -183,9 +182,10 @@ handle_call({orders, Filters}, _From, #lambda_broker_state{orders = Orders} = St
     ?LOG_DEBUG("reporting orders for ~200p", [Filters], #{domain => [lambda]}),
     {reply, filter_orders(Orders, Filters), State}.
 
-handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = Self, next_id = Id,
-    exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State)
+handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{next_id = Id,
+    exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State0)
     when Type =:= buy; Type =:= sell ->
+    State = cache_self(State0),
     case maps:find(Trader, Monitors) of
         {ok, {_Type, Module, _MRef}} ->
             ?LOG_DEBUG("~s received updated quantity from ~p for ~s (~b)", [Type, Trader, Module, Quantity], #{domain => [lambda]}),
@@ -195,7 +195,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
             NewOrders = lists:keyreplace(Trader, 3, Outstanding, {Type, XId, Trader, Quantity, XMeta, XPrev}),
             %% notify known exchanges
             Exch = maps:get(Module, Exchanges, []),
-            [lambda_exchange:sell(Ex, XId, Quantity, XMeta, {Trader, Self}) || Ex <- Exch],
+            [lambda_exchange:sell(Ex, XId, Quantity, XMeta, {Trader, State#lambda_broker_state.self}) || Ex <- Exch],
             {noreply, State#lambda_broker_state{
                 orders = Orders#{Module => NewOrders}}};
         error ->
@@ -211,7 +211,7 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
                     [lambda_exchange:buy(Ex, Id, Quantity, Meta) || Ex <- Exch];
                 {ok, Exch} when Type =:= sell ->
                     %% already subscribed, send orders to known exchanges
-                    [lambda_exchange:sell(Ex, Id, Quantity, Meta, {Trader, Self}) || Ex <- Exch];
+                    [lambda_exchange:sell(Ex, Id, Quantity, Meta, {Trader, State#lambda_broker_state.self}) || Ex <- Exch];
                 error ->
                     %% not subscribed to any exchanges yet
                     subscribe_exchange(Authority, Module)
@@ -225,10 +225,11 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{self = 
 handle_cast({cancel, Trader}, State) ->
     {noreply, cancel(Trader, true, State)}.
 
-handle_info({peers, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
+handle_info({peers, Peers}, #lambda_broker_state{authority = Auth} = State0) ->
     %% initial discovery
     ?LOG_DEBUG("discovering authorities ~200p", [Peers], #{domain => [lambda]}),
-    discover(Auth, Peers, Self),
+    State = cache_self(State0),
+    discover(Auth, Peers, State#lambda_broker_state.self),
     {noreply, State};
 
 handle_info({authority, NewAuth, _AuthAddr, _Peers}, #lambda_broker_state{authority = Auth} = State)
@@ -237,18 +238,20 @@ handle_info({authority, NewAuth, _AuthAddr, _Peers}, #lambda_broker_state{author
     {noreply, State};
 
 %% authority discovered
-handle_info({authority, Authority, AuthAddr, Peers}, #lambda_broker_state{self = Self, authority = Auth} = State) ->
+handle_info({authority, Authority, AuthAddr, Peers}, #lambda_broker_state{authority = Auth} = State0) ->
     ?LOG_DEBUG("got authority ~s:~p (~200p)", [node(Authority), Authority, AuthAddr], #{domain => [lambda]}),
     _MRef = erlang:monitor(process, Authority),
+    State = cache_self(State0),
     %% new authority may know more exchanges for outstanding orders
     [subscribe_exchange(#{Authority => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
     %% extra discovery for authorities known remotely but not locally
     NewAuth = Auth#{Authority => AuthAddr},
-    discover(NewAuth, Peers, Self),
+    discover(NewAuth, Peers, State#lambda_broker_state.self),
     {noreply, State#lambda_broker_state{authority = NewAuth}};
 
 %% exchange list updates for Module
-handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchanges = Exchanges, orders = Orders} = State) ->
+handle_info({exchange, Module, Exch}, #lambda_broker_state{exchanges = Exchanges, orders = Orders} = State0) ->
+    State = cache_self(State0),
     Outstanding = maps:get(Module, Orders),
     Known = maps:get(Module, Exchanges, []),
     %% send updates for outstanding orders to added exchanges
@@ -257,7 +260,7 @@ handle_info({exchange, Module, Exch}, #lambda_broker_state{self = Self, exchange
         ?LOG_DEBUG("new exchanges for ~s: ~200p (~200p), outstanding: ~300p", [Module, NewExch, Exch, Outstanding], #{domain => [lambda]}),
     [case Type of
          buy -> lambda_exchange:buy(Ex, Id, Quantity, Meta);
-         sell -> lambda_exchange:sell(Ex, Id, Quantity, Meta, {Trader, Self})
+         sell -> lambda_exchange:sell(Ex, Id, Quantity, Meta, {Trader, State#lambda_broker_state.self})
      end || Ex <- NewExch, {Type, Id, Trader, Quantity, Meta, Prev} <- Outstanding,
         lists:member(Ex, Prev) =:= false],
     {noreply, State#lambda_broker_state{exchanges = Exchanges#{Module => NewExch ++ Known}}};
@@ -328,6 +331,14 @@ discover(Existing, New, Self) ->
                 lambda_authority:discover(Location, Self)
         end, New).
 
+cache_self(#lambda_broker_state{self = undefined} = State) ->
+    try State#lambda_broker_state{self = lambda_discovery:get_node()}
+    catch exit:{noproc, _} ->
+        State
+    end;
+cache_self(State) ->
+    State.
+
 set_node(Location, Addr) when is_pid(Location) ->
     lambda_discovery:set_node(node(Location), Addr);
 set_node({_Reg, Node}, Addr) ->
@@ -395,7 +406,7 @@ connect_sellers(_Buyer, []) ->
     ok;
 connect_sellers(Buyer, Contacts) ->
     %% sellers contacts were discovered, ensure discovery knows contacts
-    [lambda_discovery:set_node(node(Pid), Addr) || {{Pid, Addr}, _Quantity, _Meta} <- Contacts],
+    [set_node(Pid, Addr) || {{Pid, Addr}, _Quantity, _Meta} <- Contacts],
     %% filter our contact information
     Servers = [{Pid, Quantity, Meta} || {{Pid, _Addr}, Quantity, Meta} <- Contacts],
     %% pass on order to the actual buyer

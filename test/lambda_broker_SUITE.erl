@@ -17,7 +17,8 @@
 -export([
     trade/0, trade/1,
     trade_down/0, trade_down/1,
-    peer/0, peer/1
+    peer/0, peer/1,
+    late_broker_start/0, late_broker_start/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -29,7 +30,10 @@ all() ->
     [{group, local}, {group, cluster}].
 
 groups() ->
-    [{local, [trade, trade_down]}, {cluster, [peer]}].
+    [
+        {local, [parallel], [trade, trade_down, late_broker_start]},
+        {cluster, [], [peer]}
+    ].
 
 init_per_group(local, Config) ->
     %% start discovery
@@ -107,6 +111,7 @@ trade_down(Config) when is_list(Config) ->
     ?assertMatch([{order, _, 1, Broker, _, _, _}], lambda_exchange:orders(Exch, #{type => sell})),
     %% terminate seller
     exit(Seller, kill),
+    lambda_test:sync([Broker, AuthPid, Broker]),
     %% ensure orders disappeared from broker
     ?assertEqual([], lambda_broker:orders(Broker, #{type => sell})),
     %% ... and exchange
@@ -120,6 +125,22 @@ trade_down(Config) when is_list(Config) ->
     lambda_test:sync([Broker, Exch, Broker]),
     ?assertEqual([], lambda_exchange:orders(Exch, #{type => buy})),
     [gen_server:stop(P) || P <- [Broker, AuthPid]].
+
+late_broker_start() ->
+    [{doc, "Start a broker when lambda_discovery has no local node yet"}].
+
+late_broker_start(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    {ok, Peer} = peer:start_link(#{
+        connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+    %% start lambda - should not fail!
+    {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
+    %% make the node distributed
+    Name = peer:random_name(?FUNCTION_NAME),
+    {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, shortnames]]),
+    %% broker should have the updated contact now
+    peer:stop(Peer).
 
 %%--------------------------------------------------------------------
 %% Real Cluster Test Cases
