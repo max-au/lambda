@@ -340,9 +340,12 @@ cache_self(State) ->
     State.
 
 set_node(Location, Addr) when is_pid(Location) ->
-    lambda_discovery:set_node(node(Location), Addr);
-set_node({_Reg, Node}, Addr) ->
-    lambda_discovery:set_node(Node, Addr).
+    set_node(node(Location), Addr);
+set_node({Reg, Node}, Addr) when is_atom(Reg), is_atom(Node) ->
+    set_node(Node, Addr);
+set_node(Node, Addr) when is_atom(Node) ->
+    try lambda_discovery:set_node(Node, Addr)
+    catch exit:{noproc, _} -> ok end.
 
 cancel(Pid, Demonitor, #lambda_broker_state{orders = Orders, monitors = Monitors, exchanges = Exchanges} = State) ->
     case maps:take(Pid, Monitors) of

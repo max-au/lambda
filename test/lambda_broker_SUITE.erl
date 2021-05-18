@@ -21,6 +21,11 @@
     late_broker_start/0, late_broker_start/1
 ]).
 
+%% Internal exports, only for testing
+-export([
+    monitored_peers/1
+]).
+
 -include_lib("stdlib/include/assert.hrl").
 
 suite() ->
@@ -129,31 +134,45 @@ trade_down(Config) when is_list(Config) ->
 %%--------------------------------------------------------------------
 %% Real Cluster Test Cases
 
+monitored_peers(Authorities) ->
+    MRef = monitor(process, whereis(lambda_broker)),
+    lambda_broker:authorities(lambda_broker, Authorities),
+    receive
+        {'DOWN', MRef, process, _Pid, Reason} ->
+            {error, Reason}
+    after 500 ->
+        ok
+    end.
+
 late_broker_start() ->
     [{doc, "Start a broker when lambda_discovery has no local node yet"}].
 
 late_broker_start(Config) when is_list(Config) ->
+    %% authority node
+    Boot = proplists:get_value(boot, Config),
+    AuthorityNode = lambda_test:start_node_link(undefined, Boot, undefined,  [], true),
+    Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
+    Authorities = #{{lambda_authority, AuthorityNode} => Addr},
+    %% broker node
     CP = filename:dirname(code:which(lambda_discovery)),
+    CP1 = filename:dirname(code:which(?MODULE)),
     {ok, Peer} = peer:start_link(#{
         connection => standard_io,
-        args => ["-setcookie", "lambda", "-epmd_module", "lambda_discovery", "-pa", CP]}),
+        args => ["-setcookie", "lambda", "-epmd_module", "lambda_discovery", "-pa", CP, "-pa", CP1]}),
     %% start lambda - should not fail!
     {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
+    %% ensure broker does not crash when some peers are pushed to it
+    ?assertEqual(ok, peer:call(Peer, ?MODULE, monitored_peers, [Authorities])),
     %% make the node distributed
     Name = peer:random_name(?FUNCTION_NAME),
     {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, shortnames]]),
-    %% broker should have the updated contact now, start an authority node
-    Boot = proplists:get_value(boot, Config),
-    AuthorityNode = lambda_test:start_node_link(undefined, Boot, undefined,  [], true),
     %% discover and connect
-    Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
-    ok = peer:call(Peer, lambda_broker, authorities, [lambda_broker, #{{lambda_authority, AuthorityNode} => Addr}]),
-    true = peer:call(Peer, net_kernel, connect_node, [AuthorityNode]),
-    lambda_test:sync([{Peer, lambda_broker}, {AuthorityNode, lambda_authority}, {Peer, lambda_broker}]),
+    ok = peer:call(Peer, lambda_broker, authorities, [lambda_broker, Authorities]),
+    ok = peer:call(Peer, lambda_test, wait_connection, [[AuthorityNode]]),
     %% ensure authority got the broker connection
     Brokers = peer:call(AuthorityNode, lambda_authority, brokers, [lambda_authority]),
     %% must be exactly 2 brokers
-    ?assertEqual(2, length(Brokers)),
+    ?assertEqual(2, length(Brokers), [node(B) || B <- Brokers]),
     %% stop everything
     lambda_async:pmap([{peer, stop, [N]} || N <- [AuthorityNode, Peer]]).
 

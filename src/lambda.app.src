@@ -13,10 +13,10 @@
             %% {authority, false},
             %% {broker, true},
             %% {bootspec, ...}, %% see lambda_bootstrap
-            %% {epmd_fallback, true}, %% epmd fallback enabled
             %% {publish, [mod1, mod2]}, %% modules to publish under lambda supervision
             %% {discover, [mod1, mod2]} %% modules to discover, supervised by lambda
         ]},
+        %% extra argument supplied to "kernel" application: {epmd_fallback, true}, %% epmd fallback enabled
 
         {licenses, ["BSD 3-clause clear"]},
         {links, [{"GitHub", "https://github.com/max-au/lambda"}]}

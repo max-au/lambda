@@ -203,7 +203,13 @@ address_please(Name, Host, AddressFamily) ->
         #{addr := Addr, port := Port} when AddressFamily =:= inet6, tuple_size(Addr) =:= 8 ->
             {ok, Addr, Port, ?EPMD_VERSION};
         true ->
-            erl_epmd:address_please(Name, Host, AddressFamily);
+            case erl_epmd:address_please(Name, Host, AddressFamily) of
+                {ok, Addr} ->
+                    {port, Port, Vsn} = erl_epmd:port_please(Name, Host),
+                    {ok, Addr, Port, Vsn};
+                Other ->
+                    Other
+            end;
         false ->
             {error, not_found}
     end.
@@ -282,7 +288,7 @@ handle_call({del, Node}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fall
 
 handle_call({get, Node}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fallback = EpmdFallback} = State) ->
     ?LOG_DEBUG("~p asking for ~s (~200p)", [element(1, _From),
-        case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, Nodes, error)], #{domain => [lambda]}),
+        case Node =:= node() of true -> "self"; _ -> Node end, maps:get(Node, Nodes, EpmdFallback)], #{domain => [lambda]}),
     {reply, maps:get(Node, Nodes, EpmdFallback), State};
 
 handle_call({names, HostName}, _From, #lambda_discovery_state{nodes = Nodes} = State) ->
@@ -367,7 +373,7 @@ hostname(Node) ->
     Host.
 
 epmd_fallback() ->
-    application:get_env(lambda, epmd_fallback, true).
+    application:get_env(kernel, epmd_fallback, true).
 
 local_addr(Host, Family) ->
     AddrLen = case Family of inet -> 4; inet6 -> 8 end,
@@ -392,5 +398,5 @@ local_addr(Host, Family) ->
             end
     end.
 
-make_node(Name, Host) ->
+make_node(Name, Host) when is_list(Host) ->
     list_to_atom(lists:concat([Name, "@", Host])).
