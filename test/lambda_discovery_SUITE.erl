@@ -165,6 +165,7 @@ names(Config) when is_list(Config) ->
         connection => standard_io,
         args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
     #{port := Port} = peer:call(Peer, lambda_discovery, get_node, []),
+    {port, Port, _} = peer:call(Peer, lambda_discovery, port_please, string:lexemes(atom_to_list(Peer), "@")),
     ?assertEqual({ok, [{atom_to_list(Name), Port}]}, peer:call(Peer, net_adm, names, [])),
     peer:stop(Peer).
 

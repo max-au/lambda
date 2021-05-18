@@ -31,6 +31,7 @@
     names/1,
     register_node/2,
     register_node/3,
+    port_please/2,
     port_please/3,
     listen_port_please/2,
     address_please/3
@@ -112,6 +113,15 @@ get_node() ->
 
 -define (EPMD_VERSION, 6).
 
+-spec port_please(Name, Host) -> {port, Port, Version} | noport | closed | {error, term()} when
+    Name :: atom() | string(),
+    Host :: atom() | string() | inet:ip_address(),
+    Port :: non_neg_integer(),
+    Version :: non_neg_integer().
+
+port_please(Node, Host) ->
+    port_please(Node, Host, infinity).
+
 %% @doc Lookup a node Name at Host, returns {port, P, Version} | noport
 -spec port_please(Name, Host, Timeout) -> {port, Port, Version} | noport when
     Name :: atom() | string(),
@@ -120,8 +130,15 @@ get_node() ->
     Port :: inet:port_number(),
     Version :: non_neg_integer().
 
-port_please(_Name, _Host, _Timeout) ->
-    error(notup).
+port_please(Name, Host, Timeout) ->
+    case get_node(make_node(Name, Host)) of
+        #{port := Port} ->
+            {port, Port, ?EPMD_VERSION};
+        true ->
+            erl_epmd:port_please(Name, Host, Timeout);
+        false ->
+            noport
+    end.
 
 -spec names(Host) -> {ok, [{Name, Port}]} | {error, Reason} when
     Host :: atom() | string() | inet:ip_address(),

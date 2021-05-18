@@ -106,7 +106,7 @@ trade_down(Config) when is_list(Config) ->
     Seller = spawn(
         fun () -> lambda_broker:sell(Broker, ?FUNCTION_NAME, 1), receive after infinity -> ok end end),
     %% ensure it reached the exchange
-    lambda_test:sync([Broker, AuthPid, Broker]),
+    lambda_test:sync([Broker, AuthPid, Broker, AuthPid]),
     [Exch] = lambda_broker:exchanges(Broker, ?FUNCTION_NAME),
     ?assertMatch([{order, _, 1, Broker, _, _, _}], lambda_exchange:orders(Exch, #{type => sell})),
     %% terminate seller
