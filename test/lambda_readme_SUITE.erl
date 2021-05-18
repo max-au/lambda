@@ -130,7 +130,7 @@ basic(Config) when is_list(Config) ->
         %% ++ lambda_test:logger_config([lambda_broker, lambda_bootstrap, lambda_authority]),
     %% Prefer longnames (for 'peer' does it too)
     {ok, Server} = peer:start_link(#{connection => standard_io, name => authority,
-        args => ["-lambda", "authority", "true" | VmArgs]}),
+        args => ["-connect_all", "false", "-lambda", "authority", "true" | VmArgs]}),
     %% local calc module into Server (module does not exist on disk)
     Code = compile_code(calc_v1()),
     {module, calc} = peer:call(Server, code, load_binary, [calc, nofile, Code]),

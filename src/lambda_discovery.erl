@@ -248,7 +248,7 @@ init(#{epmd_fallback := false}) ->
     {register, string(), inet:port_number(), inet | inet6}, {pid(), reference()}, state()) -> {reply, term(), state()}.
 handle_call({set, Node, Address}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fallback = EpmdFallback} = State) ->
     ?LOG_DEBUG("set ~s to ~200p", [Node, Address], #{domain => [lambda]}),
-    EpmdFallback andalso inet_db:add_host(hostname(Node), maps:get(addr, Address)),
+    EpmdFallback andalso inet_db:add_host(maps:get(addr, Address), [hostname(Node)]),
     {reply, ok, State#lambda_discovery_state{nodes = Nodes#{Node => Address}}};
 
 handle_call({del, Node}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fallback = EpmdFallback} = State) ->
@@ -271,11 +271,16 @@ handle_call({get, Node}, _From, #lambda_discovery_state{nodes = Nodes, epmd_fall
 handle_call({names, HostName}, _From, #lambda_discovery_state{nodes = Nodes} = State) ->
     %% find all Nodes of a HostName - need to iterate the entire node
     %%  map. This is a very rare request, so can be slow
-    Filtered = lists:filter(
-        fun (Full) ->
-            hostname(Full) =:= HostName
-        end, maps:keys(Nodes)),
-    {reply, Filtered, State};
+    Filtered = maps:fold(
+        fun (Node, #{port := Port}, Acc) ->
+            case string:lexemes(atom_to_list(Node), "@") of
+                [Name, HostName] ->
+                    [{Name, Port} | Acc];
+                _ ->
+                    Acc
+            end
+        end, [], Nodes),
+    {reply, {ok, Filtered}, State};
 
 handle_call({register, Name, PortNo, Family}, _From, #lambda_discovery_state{erl_epmd = ErlEpmd} = State) ->
     %% cannot use OTP logger here, because not is just being started

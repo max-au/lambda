@@ -7,7 +7,8 @@
 %% Test server callbacks
 -export([
     suite/0,
-    all/0
+    all/0,
+    groups/0
 ]).
 
 %% Test cases exports
@@ -16,7 +17,9 @@
     epmd_fallback/0, epmd_fallback/1,
     dynamic_restart/0, dynamic_restart/1,
     late_start/0, late_start/1,
-    static_start/0, static_start/1
+    static_start/0, static_start/1,
+    names/0, names/1,
+    add_del_ip/0, add_del_ip/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -26,8 +29,11 @@
 suite() ->
     [{timetrap, {seconds, 10}}].
 
+groups() ->
+    [{parallel, [parallel], [basic, epmd_fallback, dynamic_restart, late_start, static_start, names, add_del_ip]}].
+
 all() ->
-    [basic, epmd_fallback, dynamic_restart, late_start, static_start].
+    [{group, parallel}].
 
 basic() ->
     [{doc, "Tests that get_node + set_node work together both directions"}].
@@ -147,3 +153,32 @@ static_start(Config) when is_list(Config) ->
     #{port := _Port, addr := _Ip} = peer:call(Peer1, lambda_discovery, get_node, [Node1]),
     %% restart distribution
     peer:stop(Peer1).
+
+names() ->
+    [{doc, "Ensure that names() works"}].
+
+names(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    %% start node, not distributed, but with lambda_discovery
+    Name = peer:random_name(?FUNCTION_NAME),
+    {ok, Peer} = peer:start_link(#{name => Name,
+        connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+    #{port := Port} = peer:call(Peer, lambda_discovery, get_node, []),
+    ?assertEqual({ok, [{atom_to_list(Name), Port}]}, peer:call(Peer, net_adm, names, [])),
+    peer:stop(Peer).
+
+add_del_ip() ->
+    [{doc, "Verifies that set_node/del_node calls corresponding inet_db functions"}].
+
+add_del_ip(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    {ok, Peer} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME),
+        connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+    %% ensure epmd_fallback also worked, and inet_hosts
+    %%  contains some entry about the host
+    ok = peer:call(Peer, lambda_discovery, set_node, ['fake@fake', #{addr => {1, 2, 3, 4}, port => 8}]),
+    HostByName = peer:call(Peer, inet_hosts, gethostbyname, ["fake"]),
+    ?assertEqual({ok, {hostent, "fake", [], inet, 4, [{1,2,3,4}]}}, HostByName, HostByName),
+    peer:stop(Peer).
