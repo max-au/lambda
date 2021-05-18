@@ -31,8 +31,8 @@ all() ->
 
 groups() ->
     [
-        {local, [parallel], [trade, trade_down, late_broker_start]},
-        {cluster, [], [peer]}
+        {local, [parallel], [trade, trade_down]},
+        {cluster, [parallel], [late_broker_start, peer]}
     ].
 
 init_per_group(local, Config) ->
@@ -126,6 +126,9 @@ trade_down(Config) when is_list(Config) ->
     ?assertEqual([], lambda_exchange:orders(Exch, #{type => buy})),
     [gen_server:stop(P) || P <- [Broker, AuthPid]].
 
+%%--------------------------------------------------------------------
+%% Real Cluster Test Cases
+
 late_broker_start() ->
     [{doc, "Start a broker when lambda_discovery has no local node yet"}].
 
@@ -133,17 +136,26 @@ late_broker_start(Config) when is_list(Config) ->
     CP = filename:dirname(code:which(lambda_discovery)),
     {ok, Peer} = peer:start_link(#{
         connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+        args => ["-setcookie", "lambda", "-epmd_module", "lambda_discovery", "-pa", CP]}),
     %% start lambda - should not fail!
     {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
     %% make the node distributed
     Name = peer:random_name(?FUNCTION_NAME),
     {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, shortnames]]),
-    %% broker should have the updated contact now
-    peer:stop(Peer).
-
-%%--------------------------------------------------------------------
-%% Real Cluster Test Cases
+    %% broker should have the updated contact now, start an authority node
+    Boot = proplists:get_value(boot, Config),
+    AuthorityNode = lambda_test:start_node_link(undefined, Boot, undefined,  [], true),
+    %% discover and connect
+    Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
+    ok = peer:call(Peer, lambda_broker, authorities, [lambda_broker, #{{lambda_authority, AuthorityNode} => Addr}]),
+    true = peer:call(Peer, net_kernel, connect_node, [AuthorityNode]),
+    lambda_test:sync([{Peer, lambda_broker}, {AuthorityNode, lambda_authority}, {Peer, lambda_broker}]),
+    %% ensure authority got the broker connection
+    Brokers = peer:call(AuthorityNode, lambda_authority, brokers, [lambda_authority]),
+    %% must be exactly 2 brokers
+    ?assertEqual(2, length(Brokers)),
+    %% stop everything
+    lambda_async:pmap([{peer, stop, [N]} || N <- [AuthorityNode, Peer]]).
 
 peer() ->
     [{doc, "Tests basic cluster discovery with actual peer Erlang node"}].

@@ -13,6 +13,8 @@
 
 -export([init/1]).
 
+-include_lib("kernel/include/logger.hrl").
+
 -spec start_link() -> {ok, pid()} | {error, {already_started, pid()}}.
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -33,6 +35,9 @@ init([]) ->
             modules => [lambda_discovery]
         } || net_kernel:epmd_module() =/= lambda_discovery
     ],
+    DiscoSpec =/= [] andalso
+        ?LOG_WARNING("lambda requires '-epmd_module lambda_discovery' for alternative service discovery",
+            [], #{domain => [lambda]}),
     %% authority is not enabled by default, unless node name starts with `authority`
     [Name, _] = string:lexemes(atom_to_list(node()), "@"),
     Authority = application:get_env(App, authority, lists:prefix("authority", Name)),
@@ -59,13 +64,23 @@ init([]) ->
     %% Bootstrap processes supervised by Lambda, by default there is no bootspec
     %%  at all, initial bootstrap comes from configuration or via an API.
     ImplicitAuthority = if Authority -> node(); true -> 'authority' end,
-    DynBoot = application:get_env(App, bootspec, {epmd, [ImplicitAuthority]}),
+    %% if -start_epmd if set to false, there is no epmd expected on the node,
+    %%  so bootstrap won't be useful unless configured explicitly.
+    DefaultDynBoot =
+        case init:get_argument(start_epmd) of
+            {ok, [["false"]]} ->
+                [];
+            _ ->
+                {epmd, [ImplicitAuthority]}
+        end,
+    DynBoot = application:get_env(App, bootspec, DefaultDynBoot),
     BootSpec = [
         #{
             id => lambda_bootstrap,
             start => {lambda_bootstrap, start_link, [Subscribers, DynBoot]},
             modules => [lambda_bootstrap]
-        }],
+        } || DynBoot =/= []
+    ],
 
     %% Supervisors for statically published listener/plb modules
     %% take children list from configuration (hosted deployment)

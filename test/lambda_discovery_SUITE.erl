@@ -19,7 +19,8 @@
     late_start/0, late_start/1,
     static_start/0, static_start/1,
     names/0, names/1,
-    add_del_ip/0, add_del_ip/1
+    add_del_ip/0, add_del_ip/1,
+    no_start_epmd/0, no_start_epmd/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -30,7 +31,7 @@ suite() ->
     [{timetrap, {seconds, 10}}].
 
 groups() ->
-    [{parallel, [parallel], [basic, epmd_fallback, dynamic_restart, late_start, static_start, names, add_del_ip]}].
+    [{parallel, [parallel], [basic, epmd_fallback, dynamic_restart, late_start, static_start, names, add_del_ip, no_start_epmd]}].
 
 all() ->
     [{group, parallel}].
@@ -182,4 +183,21 @@ add_del_ip(Config) when is_list(Config) ->
     ok = peer:call(Peer, lambda_discovery, set_node, ['fake@fake', #{addr => {1, 2, 3, 4}, port => 8}]),
     HostByName = peer:call(Peer, inet_hosts, gethostbyname, ["fake"]),
     ?assertEqual({ok, {hostent, "fake", [], inet, 4, [{1,2,3,4}]}}, HostByName, HostByName),
+    peer:stop(Peer).
+
+no_start_epmd() ->
+    [{doc, "Tests startup with -start_epmd false"}].
+
+no_start_epmd(Config) when is_list(Config) ->
+    CP = filename:dirname(code:which(lambda_discovery)),
+    %% start node, not distributed, but with lambda_discovery
+    {ok, Peer} = peer:start_link(#{connection => standard_io,
+        args => ["-epmd_module", "lambda_discovery", "-start_epmd", "false", "-pa", CP]}),
+    %% start lambda - should not fail!
+    {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
+    %% make the node distributed
+    Name = peer:random_name(?FUNCTION_NAME),
+    {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, shortnames]]),
+    %% no bootstrap
+    ?assertEqual(undefined, peer:call(Peer, erlang, whereis, [lambda_bootstrap])),
     peer:stop(Peer).
