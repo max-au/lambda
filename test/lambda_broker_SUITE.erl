@@ -151,6 +151,10 @@ late_broker_start(Config) when is_list(Config) ->
     %% authority node
     Boot = proplists:get_value(boot, Config),
     AuthorityNode = lambda_test:start_node_link(undefined, Boot, undefined,  [], true),
+    LongShort = case peer:call(AuthorityNode, net_kernel, longnames, []) of
+                    true -> longnames;
+                    false -> shortnames
+                end,
     Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
     Authorities = #{{lambda_authority, AuthorityNode} => Addr},
     %% broker node
@@ -165,7 +169,7 @@ late_broker_start(Config) when is_list(Config) ->
     ?assertEqual(ok, peer:call(Peer, ?MODULE, monitored_peers, [Authorities])),
     %% make the node distributed
     Name = peer:random_name(?FUNCTION_NAME),
-    {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, shortnames]]),
+    {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, LongShort]]),
     %% discover and connect
     ok = peer:call(Peer, lambda_broker, authorities, [lambda_broker, Authorities]),
     ok = peer:call(Peer, lambda_test, wait_connection, [[AuthorityNode]]),

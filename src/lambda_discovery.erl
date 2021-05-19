@@ -188,6 +188,7 @@ register_node(Name, PortNo, Family) ->
 listen_port_please(_Name, _Host) ->
     {ok, 0}.
 
+-dialyzer([{no_return, [address_please/3]}, {no_fail_call, [address_please/3]}]).
 -spec address_please(Name, Host, AddressFamily) -> Success | {error, term()} when
     Name :: string(),
     Host :: string() | inet:ip_address(),
