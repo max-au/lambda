@@ -1,0 +1,19 @@
+stages:
+  - test
+
+# before_script:
+#  - docker login -u $CI_JOB_USER -p $CI_JOB_TOKEN $CI_REGISTRY
+
+# after_script:
+#  - docker logout
+
+test-ubuntu:
+  tags:
+    - linux
+  image: erlang:latest
+  stage: test
+  script:
+    - rebar3 compile
+    - rebar3 ct
+    - rebar3 edoc
+    - rebar3 dialyzer
