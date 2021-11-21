@@ -160,7 +160,7 @@ late_broker_start(Config) when is_list(Config) ->
     %% broker node
     CP = filename:dirname(code:which(lambda_discovery)),
     CP1 = filename:dirname(code:which(?MODULE)),
-    {ok, Peer} = peer:start_link(#{
+    {ok, Peer, _Node} = peer:start_link(#{
         connection => standard_io,
         args => ["-setcookie", "lambda", "-epmd_module", "lambda_discovery", "-pa", CP, "-pa", CP1]}),
     %% start lambda - should not fail!
@@ -168,7 +168,7 @@ late_broker_start(Config) when is_list(Config) ->
     %% ensure broker does not crash when some peers are pushed to it
     ?assertEqual(ok, peer:call(Peer, ?MODULE, monitored_peers, [Authorities])),
     %% make the node distributed
-    Name = peer:random_name(?FUNCTION_NAME),
+    Name = list_to_atom(peer:random_name(?FUNCTION_NAME)),
     {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, LongShort]]),
     %% discover and connect
     ok = peer:call(Peer, lambda_broker, authorities, [lambda_broker, Authorities]),

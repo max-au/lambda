@@ -53,7 +53,8 @@ groups() ->
     [{parallel, [parallel], [local, remote, reconnect, stop_authority]}].
 
 all() ->
-    [{group, parallel}, basic, proper].
+    %% [{group, parallel}, basic, proper].
+    [{group, parallel}, basic].
 
 %%--------------------------------------------------------------------
 %% Convenience & data
@@ -230,9 +231,9 @@ basic(Config) when is_list(Config) ->
     %% detect low-power VM and don't run large clusters
     {Totals, Auths} =
         case erlang:system_info(schedulers) of
-            Large when Large > 11 -> {[2, 4, 10, 32, 64], [1, 2, 3, 6]};
-            Normal when Normal > 5 -> {[2, 4, 10, 32], [1, 2, 3, 6]};
-            _Small -> {[2, 4, 10], [1, 2, 3]}
+            Large when Large > 11 -> {[2, 4, 10, 32, 48], [1, 2, 3, 4]};
+            Normal when Normal > 5 -> {[2, 4, 10], [1, 2, 3]};
+            _Small -> {[2, 4], [1, 2]}
         end,
     %% run many combinations
     [

@@ -152,13 +152,14 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
             Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))];
             true -> []
         end,
-    {ok, Node} = peer:StartFun(#{connection => standard_io, name => Name,
+    {ok, Peer, Node} = peer:StartFun(#{connection => standard_io, name => Name,
         args => [
             "-boot", Boot,
             "-setcookie", "lambda",
             "-connect_all", "false",
             "-epmd_module", "lambda_discovery",
             "-pa", TestCP, "-pa", CP] ++ ExtraArgs ++ CmdLine}),
+    register(Node, Peer), %% temporary workaround I hope
     %% wait for connection?
     case Bootspec of
         {static, Map} when is_map(Map) ->
