@@ -7,7 +7,8 @@
         {applications,
             [kernel,
                 stdlib,
-                compiler
+                compiler,%% used to dynamically create stubs on the client side
+                argparse %% needed for lctl APIs
             ]},
         {env, [
             %% {authority, false},

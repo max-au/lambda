@@ -8,6 +8,6 @@ Single umbrella application contains several releases:
 * Backend: stateless logic. Calc application implements math calculations.
 * Storage: persistent database.
 
-Client application (math) can either started in rebar3 shell. It's also possible to use vanilla `telnet`.
+Client application (math) can be used from rebar3 shell, or via `telnet`.
 
 ## Edge implementation

@@ -20,7 +20,8 @@
     remote_stateless_update/0, remote_stateless_update/1,
     remote_api_update/0, remote_api_update/1,
     remote_canary/0, remote_canary/1,
-    version_demo/0, version_demo/1
+    version_demo/0, version_demo/1,
+    deploy_demo/0, deploy_demo/1
 ]).
 
 -include_lib("stdlib/include/assert.hrl").
@@ -30,7 +31,7 @@ suite() ->
     [{timetrap, {seconds, 10}}].
 
 all() ->
-    [basic, remote_canary].
+    [basic, remote_stateless_update, remote_api_update, remote_canary, version_demo, deploy_demo].
 
 init_per_suite(Config) ->
     Root = filename:join(proplists:get_value(priv_dir, Config), "lambda"),
@@ -108,12 +109,6 @@ make_app(Priv, Name, Vsn, Mod, Code) ->
     code:add_path(Path),
     Path.
 
-start_auth(TestCase, Boot) ->
-    {AuthPeer, AuthNode} = lambda_test:start_node_link(TestCase, Boot, undefined, ["+S", "2:2"], true),
-    Addr = peer:call(AuthPeer, lambda_discovery, get_node, []),
-    BootSpec = {static, #{{lambda_authority, AuthNode} => Addr}},
-    {AuthPeer, AuthNode, BootSpec}.
-
 wait_capacity_change(_Client, _Plb) ->
     %% TODO: replace sleep with some capacity notification in PLB itself
     ct:sleep(200).
@@ -126,8 +121,10 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     {ok, Host} = inet:gethostname(),
-    VmArgs = dist_args(Host) ++ ["-epmd_module", "lambda_discovery", "-pa", filename:dirname(code:which(lambda_discovery)),
-        "-lambda", "bootspec", "{epmd, [authority]}"],
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
+    VmArgs = dist_args(Host) ++ ["-epmd_module", "lambda_discovery", "-lambda", "bootspec",
+        "{epmd, [authority]}"] ++ CodePath,
         %% ++ lambda_test:logger_config([lambda_broker, lambda_bootstrap, lambda_authority]),
     %% Prefer longnames (for 'peer' does it too)
     {ok, AuthPeer, _Server} = ?CT_PEER(#{connection => standard_io, name => authority,
@@ -227,7 +224,7 @@ remote_api_update() ->
 remote_api_update(Config) when is_list(Config) ->
     LambdaBoot = proplists:get_value(boot, Config),
     %% start authority and client nodes
-    {_AuthPeer, _AuthNode, BootSpec} = start_auth(?FUNCTION_NAME, LambdaBoot),
+    {_AuthPeer, _AuthNode, BootSpec} = lambda_test:start_auth(?FUNCTION_NAME, LambdaBoot),
     {ClientPeer, _ClientNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec, ["+S", "2:2"], false),
     {_ServerPeer, _ServerNode} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec, ["+S", "2:2"], false),
     %% canary "calc" on the server
@@ -253,7 +250,7 @@ version_demo(Config) when is_list(Config) ->
     LibDir = filename:join(Root, "lib"),
 
     %% start authority
-    {_AuthPeer, _AuthNode, BootSpec} = start_auth(?FUNCTION_NAME, LambdaBoot),
+    {_AuthPeer, _AuthNode, BootSpec} = lambda_test:start_auth(?FUNCTION_NAME, LambdaBoot),
 
     %% make server v1 release
     VDemo1 = make_app(LibDir, vdemo, "0.1.0", vdemo, vdemo_v1()),
@@ -292,3 +289,27 @@ version_demo(Config) when is_list(Config) ->
     %% bonus: check first client capacity, which should be higher now
     NewCapacity = peer:call(Client1, lambda_plb, capacity, [Plb]),
     ?assert(InitialCapacity < NewCapacity, {scale, InitialCapacity, NewCapacity}).
+
+deploy_demo() ->
+    [{doc, "Demo from doc/DEPLOY.md"}].
+
+deploy_demo(Config) when is_list(Config) ->
+    LambdaBoot = proplists:get_value(boot, Config),
+    {AuthPeer, _AuthNode, BootSpec} = lambda_test:start_auth(?FUNCTION_NAME, LambdaBoot),
+
+    %% deploy new app
+    {Server, _} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec,
+        ["+S", "2:2", "-lambda", "discover", "[{vdemo,#{vsn=>2,capacity=>2}}]"], false),
+
+    %% run a server (vdemo release)
+    {Client, _} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec,
+        ["+S", "2:2", "-lambda", "discover", "[{vdemo,#{vsn=>2,capacity=>2}}]"], false),
+
+    %% add a module to vdemo release
+
+    %% make client access
+    {Client, _} = lambda_test:start_node_link(?FUNCTION_NAME, LambdaBoot, BootSpec,
+        ["+S", "2:2", "-lambda", "discover", "[{vdemo,#{vsn=>2,capacity=>2}}]"], false),
+
+    lambda_async:pmap([{peer, stop, [N]} || N <- [AuthPeer, Server, Client]]),
+    ok.

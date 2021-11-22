@@ -12,6 +12,7 @@
     create_release/4,
     logger_config/1,
     filter_module/2,
+    start_auth/2,
     start_node/2,
     start_node/5,
     start_node_link/5,
@@ -67,7 +68,7 @@ create_release(Priv) ->
 -spec create_release(DestDir :: file:filename_all(), Apps :: [atom()],
     RelName :: string(), RelVsn :: string()) -> file:filename_all().
 create_release(DestDir, RelApps, RelName, RelVsn) ->
-    AllApps = [kernel, stdlib, compiler, lambda, sasl | RelApps],
+    AllApps = [kernel, stdlib, compiler, argparse, lambda, sasl | RelApps],
     %% write release spec, *.rel file
     BaseDir = filename:join([DestDir, "releases", RelVsn]),
     Boot = filename:join(BaseDir, RelName),
@@ -122,6 +123,15 @@ filter_module(#{meta := Meta} = LogEvent, Modules) when is_list(Modules) ->
             stop
     end.
 
+%% @doc Helper function to start authority node given pre-built release
+start_auth(TestCase, Boot) ->
+    Log = [], %% logger_config([lambda_broker, lambda_bootstrap, lambda_authority]),
+    AuthNode = lambda_test:start_node_link(TestCase, Boot, undefined, ["+S", "2:2" | Log], true),
+    AuthPeer = whereis(AuthNode),
+    Addr = peer:call(AuthPeer, lambda_discovery, get_node, []),
+    BootSpec = {static, #{{lambda_authority, AuthNode} => Addr}},
+    {AuthPeer, AuthNode, BootSpec}.
+
 -type test_id() :: integer() | string() | atom().
 
 %% @doc Starts an extra node with specified bootstrap, no authority and default command line.
@@ -146,8 +156,8 @@ start_node_link(TestId, Boot, Bootspec, CmdLine, Authority) ->
 start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
     %% in tests, use short names by default
     Name = random_name(TestId, Authority),
-    CP = filename:dirname(code:which(lambda)),
-    TestCP = filename:dirname(code:which(?MODULE)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, ?MODULE, argparse]],
+    CodePath = lists:concat(Paths),
     ExtraArgs = if
             Bootspec =/= undefined -> ["-lambda", "bootspec", lists:flatten(io_lib:format("~10000tp", [Bootspec]))];
             true -> []
@@ -157,8 +167,8 @@ start_impl(TestId, Boot, Bootspec, CmdLine, Authority, StartFun) ->
             "-boot", Boot,
             "-setcookie", "lambda",
             "-connect_all", "false",
-            "-epmd_module", "lambda_discovery",
-            "-pa", TestCP, "-pa", CP] ++ ExtraArgs ++ CmdLine}),
+            "-epmd_module", "lambda_discovery"]
+            ++ CodePath ++ ExtraArgs ++ CmdLine}),
     register(Node, Peer), %% temporary workaround I hope
     %% wait for connection?
     case Bootspec of

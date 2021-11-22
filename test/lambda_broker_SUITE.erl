@@ -158,11 +158,11 @@ late_broker_start(Config) when is_list(Config) ->
     Addr = peer:call(AuthorityNode, lambda_discovery, get_node, []),
     Authorities = #{{lambda_authority, AuthorityNode} => Addr},
     %% broker node
-    CP = filename:dirname(code:which(lambda_discovery)),
-    CP1 = filename:dirname(code:which(?MODULE)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, ?MODULE, argparse]],
+    CodePath = lists:concat(Paths),
     {ok, Peer, _Node} = peer:start_link(#{
         connection => standard_io,
-        args => ["-setcookie", "lambda", "-epmd_module", "lambda_discovery", "-pa", CP, "-pa", CP1]}),
+        args => ["-setcookie", "lambda", "-epmd_module", "lambda_discovery" | CodePath]}),
     %% start lambda - should not fail!
     {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
     %% ensure broker does not crash when some peers are pushed to it

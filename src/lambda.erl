@@ -10,7 +10,8 @@
     publish/1,
     publish/2,
     discover/1,
-    discover/2
+    discover/2,
+    deploy/2
 ]).
 
 -type meta() :: #{
@@ -44,7 +45,7 @@ discover(Module, Options) ->
             {ok, Plb}
     end.
 
-%% @doc Publishes  a module, starting server under lambda supervision.
+%% @doc Publishes a module, starting server under lambda supervision.
 -spec publish(module()) -> {ok, pid()} | {error, {already_started, pid()}}.
 publish(Module) ->
     publish(Module, #{capacity => erlang:system_info(schedulers)}).
@@ -52,3 +53,9 @@ publish(Module) ->
 -spec publish(module(), lambda_listener:options()) -> {ok, pid()} | {error, {already_started, pid()}}.
 publish(Module, Options) ->
     lambda_listener_sup:start_listener(Module, Options).
+
+%% @doc Deploys a module, either new one, or upgrading existing service.
+-spec deploy(module(), #{}) -> {ok, pid()} | {error, {already_exists, pid()}}.
+deploy(Module, Options) ->
+    true = Module =/= Options,
+    {ok, self()}.

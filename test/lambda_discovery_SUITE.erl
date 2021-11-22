@@ -42,10 +42,11 @@ basic() ->
 
 basic(Config) when is_list(Config) ->
     %% start two peers and connect them
-    CP = filename:dirname(code:which(lambda_discovery)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
     %% don't pmap, or linked nodes will die
     VmArgs = ["-epmd_module", "lambda_discovery", "-kernel", "dist_auto_connect", "never",
-        "-kernel", "epmd_fallback", "false", "-pa", CP],
+        "-kernel", "epmd_fallback", "false" | CodePath],
     [{ok, PeerOne, One}, {ok, PeerTwo, Two}] = [
         ?CT_PEER(#{connection => standard_io,
         args => VmArgs}) || _ <- lists:seq(1, 2)],
@@ -92,10 +93,11 @@ dynamic_restart() ->
     [{doc, "Tests dynamic distribution start/stop/restart with epmd_module"}].
 
 dynamic_restart(Config) when is_list(Config) ->
-    CP = filename:dirname(code:which(lambda_discovery)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
     %% start node, not distributed, but with lambda_discovery
     {ok, Peer, _} = peer:start_link(#{connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+        args => ["-epmd_module", "lambda_discovery" | CodePath]}),
     %% make the node distributed
     Name = list_to_atom(peer:random_name(?FUNCTION_NAME)),
     {ok, _NC} = peer:call(Peer, net_kernel, start, [[Name, shortnames]]),
@@ -127,8 +129,9 @@ late_start() ->
     [{doc, "Tests lambda_discovery started at various stages"}].
 
 late_start(Config) when is_list(Config) ->
-    CP = filename:dirname(code:which(lambda_discovery)),
-    {ok, Peer, _Node} = peer:start_link(#{connection => standard_io, args => ["-pa", CP]}),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
+    {ok, Peer, _Node} = peer:start_link(#{connection => standard_io, args => CodePath}),
     {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
     %% make the node distributed
     Name = list_to_atom(peer:random_name(?FUNCTION_NAME)),
@@ -140,18 +143,19 @@ static_start() ->
     [{doc, "Tests static distribution with/without lambda_discovery"}].
 
 static_start(Config) when is_list(Config) ->
-    CP = filename:dirname(code:which(lambda_discovery)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
     %% start node, not distributed, but with lambda_discovery
     {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(?FUNCTION_NAME),
         connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+        args => ["-epmd_module", "lambda_discovery" | CodePath]}),
     ?assertNotEqual('nonode@nohost', Node),
     %% ensure that lambda_discovery got the node rego
     Rego = peer:call(Peer, lambda_discovery, get_node, [Node]),
     ?assertNotEqual(error, Rego),
     peer:stop(Peer),
     %% try the same but with lambda_discovery starting later as an app
-    {ok, Peer1, Node1} = ?CT_PEER(#{connection => standard_io, args => ["-pa", CP]}),
+    {ok, Peer1, Node1} = ?CT_PEER(#{connection => standard_io, args => CodePath}),
     {ok, _Apps} = peer:call(Peer1, application, ensure_all_started, [lambda]),
     #{port := _Port, addr := _Ip} = peer:call(Peer1, lambda_discovery, get_node, [Node1]),
     peer:stop(Peer1).
@@ -160,10 +164,11 @@ names() ->
     [{doc, "Ensure that names() works"}].
 
 names(Config) when is_list(Config) ->
-    CP = filename:dirname(code:which(lambda_discovery)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
     %% start node, not distributed, but with lambda_discovery
     {ok, Peer, Node} = ?CT_PEER(#{connection => standard_io, name => peer:random_name(?FUNCTION_NAME),
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+        args => ["-epmd_module", "lambda_discovery" | CodePath]}),
     #{port := Port} = peer:call(Peer, lambda_discovery, get_node, []),
     [Name, Host] = string:lexemes(atom_to_list(Node), "@"),
     {port, Port, _} = peer:call(Peer, lambda_discovery, port_please, [Name, Host]),
@@ -174,10 +179,11 @@ add_del_ip() ->
     [{doc, "Verifies that set_node/del_node calls corresponding inet_db functions"}].
 
 add_del_ip(Config) when is_list(Config) ->
-    CP = filename:dirname(code:which(lambda_discovery)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
     {ok, Peer, _Node} = ?CT_PEER(#{
         connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-pa", CP]}),
+        args => ["-epmd_module", "lambda_discovery" | CodePath]}),
     %% ensure epmd_fallback also worked, and inet_hosts
     %%  contains some entry about the host
     ok = peer:call(Peer, lambda_discovery, set_node, ['fake@fake', #{addr => {1, 2, 3, 4}, port => 8}]),
@@ -189,10 +195,11 @@ no_start_epmd() ->
     [{doc, "Tests startup with -start_epmd false"}].
 
 no_start_epmd(Config) when is_list(Config) ->
-    CP = filename:dirname(code:which(lambda_discovery)),
+    Paths = [["-pa", filename:dirname(code:which(M))] || M <- [lambda, argparse]],
+    CodePath = lists:concat(Paths),
     %% start node, not distributed, but with lambda_discovery
     {ok, Peer, _Node} = peer:start_link(#{connection => standard_io,
-        args => ["-epmd_module", "lambda_discovery", "-start_epmd", "false", "-pa", CP]}),
+        args => ["-epmd_module", "lambda_discovery", "-start_epmd", "false" | CodePath]}),
     %% start lambda - should not fail!
     {ok, _Apps} = peer:call(Peer, application, ensure_all_started, [lambda]),
     %% make the node distributed
