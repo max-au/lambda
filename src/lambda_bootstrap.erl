@@ -15,7 +15,8 @@
 -export([
     start_link/2,
     discover/0,
-    discover/1
+    discover/1,
+    get_bootstrap/0
 ]).
 
 -behaviour(gen_server).
@@ -55,6 +56,11 @@ discover() ->
 discover(BootSpec) ->
     gen_server:call(?MODULE, {discover, BootSpec}).
 
+%% @doc Returns known bootstrap
+-spec get_bootstrap() -> #{lambda:location() => lambda_discovery:address()}.
+get_bootstrap() ->
+    gen_server:call(?MODULE, get_bootstrap).
+
 %%--------------------------------------------------------------------
 %% gen_server implementation
 
@@ -81,7 +87,9 @@ handle_call(discover, _From, #lambda_bootstrap_state{timer = Timer} = State) ->
     Timer =/= undefined andalso erlang:cancel_timer(Timer),
     {reply, ok, handle_resolve(State)};
 handle_call({discover, NewSpec}, _From, State) ->
-    handle_call(discover, _From, State#lambda_bootstrap_state{spec = NewSpec}).
+    handle_call(discover, _From, State#lambda_bootstrap_state{spec = NewSpec});
+handle_call(get_bootstrap, _From, #lambda_bootstrap_state{bootstrap = Bootstrap} = State) ->
+    {reply, Bootstrap, State}.
 
 -spec handle_cast(term(), state()) -> no_return().
 handle_cast(_Req, _State) ->

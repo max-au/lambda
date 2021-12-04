@@ -313,7 +313,7 @@ handle_call({register, Name, PortNo, Family}, _From, #lambda_discovery_state{erl
     Creation =
         case ErlEpmd of
             undefined ->
-                1;
+                rand:uniform(1000000);
             _Pid ->
                 try
                     {ok, Creation1} = erl_epmd:register_node(Name, PortNo, Family),
@@ -334,9 +334,16 @@ handle_continue({register, PortNo, Family}, #lambda_discovery_state{nodes = Node
     {noreply, State#lambda_discovery_state{nodes = Nodes#{Node => #{addr => Addr, port => PortNo, family => Family}}}}.
 
 %% @private
--spec handle_cast(term(), state()) -> no_return().
-handle_cast(_Cast, _State) ->
-    error(badarg).
+-spec handle_cast(term(), state()) -> {noreply, state()}.
+handle_cast({local_addr, Addr, Family}, #lambda_discovery_state{nodes = Nodes} = State) ->
+    Node = node(),
+    case maps:find(Node, Nodes) of
+        error ->
+            {noreply, State}; %% race condition, node already not distributed
+        {ok, ThisNode} ->
+            NewNodes = Nodes#{Node => ThisNode#{addr => Addr, family => Family}},
+            {noreply, State#lambda_discovery_state{nodes = NewNodes}}
+    end.
 
 %% @private
 -spec handle_info(term(), state()) -> {noreply, state()}.
@@ -350,6 +357,9 @@ handle_info({'DOWN', _MRef, process, NetKernel, _Reason}, #lambda_discovery_stat
     {noreply, State#lambda_discovery_state{net_kernel = undefined}};
 %% ignore "late sends", when monitor_nodes(false) wasn't fast enough to switch it off
 handle_info({UpDown, _Node}, State) when UpDown =:= nodeup; UpDown =:= nodedown ->
+    {noreply, State};
+%% ignore 'EXIT' from resolver process
+handle_info({'EXIT', _Pid, normal}, State) ->
     {noreply, State}.
 
 %% @private
@@ -382,21 +392,26 @@ local_addr(Host, Family) ->
         {ok, Addr1} when tuple_size(Addr1) =:= AddrLen ->
             Addr1;
         undefined ->
-            %% native resolver cannot be used because discovery process
-            %%  is started under kernel_sup when inet_native is not yet
-            %%  available.
-            %% use one written in pure Erlang
-            case inet_res:gethostbyname(Host, Family) of
-                {ok, #hostent{h_addr_list = Addrs}} ->
-                    hd(Addrs);
-                {error, nxdomain} ->
-                    %% attempt to guess external IP address enumerating interfaces that are up
-                    {ok, Ifs} = inet:getifaddrs(),
-                    LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
-                    Local = [Valid || Valid <- LocalUp, tuple_size(Valid) =:= AddrLen],
-                    %% TODO: localhost should have lower priority
-                    hd(Local)
-            end
+            %% attempt to guess external IP address enumerating interfaces that are up
+            {ok, Ifs} = inet:getifaddrs(),
+            LocalUp = [proplists:get_value(addr, Opts) || {_, Opts} <- Ifs, lists:member(up, proplists:get_value(flags, Opts, []))],
+            Local = [Valid || Valid <- LocalUp, tuple_size(Valid) =:= AddrLen],
+            %% spawn a resolver process that might figure out external IP
+            spawn_link(
+                fun () ->
+                    %% native resolver cannot be used because discovery process
+                    %%  is started under kernel_sup when inet_native is not yet
+                    %%  available.
+                    %% use one written in pure Erlang
+                    try
+                        {ok, #hostent{h_addr_list = Addrs}}  = inet_res:gethostbyname(Host, Family),
+                        gen_server:cast(?MODULE, {local_addr, hd(Addrs), Family})
+                    catch _:_ -> ok
+                    end
+                end
+            ),
+            %% TODO: localhost should have lower priority
+            hd(Local)
     end.
 
 make_node(Name, Host) when is_list(Host) ->

@@ -31,7 +31,8 @@ suite() ->
     [{timetrap, {seconds, 10}}].
 
 all() ->
-    [basic, remote_stateless_update, remote_api_update, remote_canary, version_demo, deploy_demo].
+    [basic, remote_canary].
+    %% [basic, remote_stateless_update, remote_api_update, remote_canary, version_demo, deploy_demo].
 
 init_per_suite(Config) ->
     Root = filename:join(proplists:get_value(priv_dir, Config), "lambda"),

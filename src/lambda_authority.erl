@@ -141,7 +141,8 @@ handle_info({peers, Peers}, #lambda_authority_state{authorities = Auth} = State)
 
 %% syn: initiator is discovering us, sending a list of Peers known to it
 handle_info({syn, Initiator, Peers}, #lambda_authority_state{authorities = Auth} = State) ->
-    ?LOG_DEBUG("SYN from ~p ~200p (brokers ~200p)", [Initiator, Peers, maps:keys(State#lambda_authority_state.brokers)], #{domain => [lambda]}),
+    ?LOG_DEBUG("SYN from ~p (~s) ~200p (brokers ~200p)", [Initiator, node(Initiator),
+        Peers, maps:keys(State#lambda_authority_state.brokers)], #{domain => [lambda]}),
     %% remember initiator
     _MRef = monitor(process, Initiator),
     Contact = maps:get(Initiator, Peers),

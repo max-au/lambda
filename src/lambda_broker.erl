@@ -33,7 +33,13 @@
     cancel/2,
 
     %% Internal API for exchange
-    complete_order/4
+    complete_order/4,
+
+    %% Internal API for observability
+    watch/2,
+    unwatch/2,
+
+    applications/1
 ]).
 
 %% Introspection API
@@ -138,6 +144,18 @@ exchanges(Srv, Module) ->
 orders(Srv, Filters) ->
     gen_server:call(Srv, {orders, Filters}).
 
+-spec watch(lambda:dst(), pid()) -> reference() | {error, already_exists}.
+watch(Srv, Observer) ->
+    gen_server:call(Srv, {watch, Observer}).
+
+-spec unwatch(lambda:dst(), pid()) -> ok.
+unwatch(Srv, Observer) ->
+    gen_server:cast(Srv, {unwatch, Observer}).
+
+-spec applications(lambda:dst()) -> [atom()].
+applications(Srv) ->
+    gen_server:call(Srv, applications).
+
 %%--------------------------------------------------------------------
 %% Implementation (gen_server)
 
@@ -162,7 +180,9 @@ orders(Srv, Filters) ->
     %% outstanding orders for this module
     orders = #{} :: #{module() => [order()]},
     %% monitoring for orders and exchanges
-    monitors = #{} :: #{pid() => {buy | sell | exchange, module(), reference()}}
+    monitors = #{} :: #{pid() => {buy | sell | exchange, module(), reference()}},
+    %% watchers: observability for the broker state, for debugging/visibility
+    watchers = #{} :: #{pid() => reference()}
 }).
 
 -type state() :: #lambda_broker_state{}.
@@ -180,7 +200,16 @@ handle_call({exchanges, Module}, _From, #lambda_broker_state{exchanges = Exch} =
     {reply, maps:get(Module, Exch, []), State};
 handle_call({orders, Filters}, _From, #lambda_broker_state{orders = Orders} = State) ->
     ?LOG_DEBUG("reporting orders for ~200p", [Filters], #{domain => [lambda]}),
-    {reply, filter_orders(Orders, Filters), State}.
+    {reply, filter_orders(Orders, Filters), State};
+handle_call({watch, Observer}, _From, #lambda_broker_state{watchers = Watchers} = State) when is_map_key(Observer, Watchers)->
+    {reply, {error, already_exists}, State};
+handle_call({watch, Observer}, _From, #lambda_broker_state{watchers = Watchers} = State) ->
+    MRef = erlang:monitor(process, Observer),
+    {reply, MRef, State#lambda_broker_state{watchers = Watchers#{Observer => MRef}}};
+handle_call(applications, _From, State) ->
+    Apps = [{Name, Desc, Vsn} || {Name, Desc, Vsn} <- application:loaded_applications(),
+        lists:prefix("adbmal", lists:reverse(Desc))], %% admbal <= lambda in reverse
+    {reply, Apps, State}.
 
 handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{next_id = Id,
     exchanges = Exchanges, authority = Authority, orders = Orders, monitors = Monitors} = State0)
@@ -223,7 +252,17 @@ handle_cast({Type, Module, Trader, Quantity, Meta}, #lambda_broker_state{next_id
 
 %% handles cancellations for both sell and buy orders (should it be split?)
 handle_cast({cancel, Trader}, State) ->
-    {noreply, cancel(Trader, true, State)}.
+    {noreply, cancel(Trader, true, State)};
+
+%% handles 'unwatch'
+handle_cast({unwatch, Observer}, #lambda_broker_state{watchers = Watchers} = State) ->
+    case maps:take(Observer, Watchers) of
+        {Ref, NewWatchers} ->
+            erlang:demonitor(Ref, [flush]),
+            {noreply, State#lambda_broker_state{watchers = NewWatchers}};
+        error ->
+            {noreply, State}
+    end.
 
 handle_info({peers, Peers}, #lambda_broker_state{authority = Auth} = State0) ->
     %% initial discovery
@@ -246,6 +285,9 @@ handle_info({authority, Authority, AuthAddr, Peers}, #lambda_broker_state{author
     [subscribe_exchange(#{Authority => []}, Mod) || Mod <- maps:keys(State#lambda_broker_state.orders)],
     %% extra discovery for authorities known remotely but not locally
     NewAuth = Auth#{Authority => AuthAddr},
+    %% notify those interested in watching broker state
+    notify_watchers(authority, NewAuth, Peers, State0#lambda_broker_state.watchers),
+    %% continue discovering more authorities
     discover(NewAuth, Peers, State#lambda_broker_state.self),
     {noreply, State#lambda_broker_state{authority = NewAuth}};
 
@@ -426,3 +468,8 @@ filter_type(Orders, #{type := Type}) ->
     [Order || Order <- Orders, element(1, Order) =:= Type];
 filter_type(Orders, _Filters) ->
     Orders.
+
+notify_watchers(authority, Auth, Peers, Watchers) ->
+    Connected = maps:keys(Auth),
+    Undiscovered = maps:keys(Peers) -- Connected,
+    [Watcher ! {Ref, authority, Connected, Undiscovered} || {Watcher, Ref} <- maps:to_list(Watchers)].

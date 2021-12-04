@@ -17,11 +17,15 @@
     start_node/5,
     start_node_link/5,
     start_nodes/4,
+    start_tier/4,
+    stop_tier/1,
     wait_connection/1,
     wait_connection/2
 ]).
 
 -type sync_target() :: sys:name() | {lambda:dst(), sys:name()}.
+
+-include_lib("stdlib/include/assert.hrl").
 
 %% @doc Flushes well-behaved (implementing OTP system behaviour)
 %%      process queue. When a list of processes is supplied, acts
@@ -253,3 +257,30 @@ format_test_id(undefined) -> [];
 format_test_id(Int) when is_integer(Int) -> [$- | integer_to_list(Int)];
 format_test_id(Atom) when is_atom(Atom) -> [$- | atom_to_list(Atom)];
 format_test_id(List) when is_list(List) -> [$- | List].
+
+
+%% @doc
+%% Starts a whole lambda tier, using "Boot" for pre-built release,
+%%  with Count nodes in total and AuthorityCount authorities.
+-spec start_tier(TestId :: string() | atom(), Boot :: file:filename_all(), Count :: pos_integer(),
+    AuthorityCount :: pos_integer()) -> [{node(), boolean()}].
+start_tier(TestId, Boot, Count, AuthorityCount) when Count >= AuthorityCount ->
+    %% start the nodes concurrently
+    Start = try ets:lookup_element(ac_tab, {?MODULE, TestId}, 2) catch _:_ -> 1 end,
+    AuthNodes = [
+        list_to_atom(lists:concat(["authority-", TestId, "-", integer_to_list(Seq)]))
+        || Seq <- lists:seq(Start, Start + AuthorityCount)],
+    Log = [], %% lambda_test:logger_config([lambda_discovery, lambda_bootstrap]),
+    Tier = lambda_async:pmap([
+        fun () ->
+            Auth = Seq =< AuthorityCount,
+            Node = start_node(TestId, Boot, {epmd, AuthNodes}, ["+S", "2:2"] ++ Log, Auth),
+            {Node, Auth}
+        end
+        || Seq <- lists:seq(1, Count)], 5000 + Count * 100), %% add a second per every 10 nodes to start
+    [?assertNotEqual(undefined, whereis(N), {failed_to_start, N, A}) || {N, A} <- Tier],
+    Tier.
+
+%% @doc
+stop_tier(Peers) ->
+    lambda_async:pmap([{peer, stop, [N]} || {N, _} <- Peers]).

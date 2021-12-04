@@ -1,6 +1,7 @@
 _build
 .idea
 *.iml
+lctl
 rebar3.crashdump
 erl_crash.dump
 doc/*.html

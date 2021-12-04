@@ -59,25 +59,6 @@ all() ->
 %%--------------------------------------------------------------------
 %% Convenience & data
 
-start_tier(TestId, Boot, Count, AuthorityCount) when Count >= AuthorityCount ->
-    %% start the nodes concurrently
-    AuthNodes = [
-            list_to_atom(lists:concat(["authority-", TestId, "-", integer_to_list(Seq)]))
-        || Seq <- lists:seq(1, AuthorityCount)],
-    Log = [], %% lambda_test:logger_config([lambda_discovery, lambda_bootstrap]),
-    Tier = lambda_async:pmap([
-        fun () ->
-            Auth = Seq =< AuthorityCount,
-            Node = lambda_test:start_node(TestId, Boot, {epmd, AuthNodes}, ["+S", "2:2"] ++ Log, Auth),
-            {Node, Auth}
-        end
-        || Seq <- lists:seq(1, Count)], 5000 + Count * 100), %% add a second per every 10 nodes to start
-    [?assertNotEqual(undefined, whereis(N), {failed_to_start, N, A}) || {N, A} <- Tier],
-    Tier.
-
-stop_tier(Peers) ->
-    lambda_async:pmap([{peer, stop, [N]} || {N, _} <- Peers]).
-
 multi_call(Peers, M, F, A) ->
     lambda_async:pmap([{peer, call, [P, M, F, A]} || P <- Peers]).
 
@@ -120,7 +101,7 @@ wait_brokers(BrokerPeers, AuthPeers, BrokerPids, AuthPids) ->
 verify_topo(Boot, TotalCount, AuthCount) ->
     ct:pal("Verifying ~b nodes with ~b authorities", [TotalCount, AuthCount]),
     %% start a tier, with several authorities
-    AllPeers = start_tier(integer_to_list(AuthCount) ++ "-" ++ integer_to_list(TotalCount),
+    AllPeers = lambda_test:start_tier(integer_to_list(AuthCount) ++ "-" ++ integer_to_list(TotalCount),
         Boot, TotalCount, AuthCount),
     %% Peers running Authority
     AuthPeers = [A || {A, true} <- AllPeers],
@@ -142,7 +123,7 @@ verify_topo(Boot, TotalCount, AuthCount) ->
     %%  connections are made
     Result = wait_brokers(Nodes, AuthPeers, BrokerPids, AuthPids),
     %% stop everything
-    stop_tier(AllPeers),
+    lambda_test:stop_tier(AllPeers),
     Result.
 
 %%--------------------------------------------------------------------
@@ -247,7 +228,7 @@ reconnect() ->
 reconnect(Config) when is_list(Config) ->
     Boot = proplists:get_value(boot, Config),
     %% start a tier, with several authorities
-    AllPeers = start_tier(reconnect, Boot, 4, 2),
+    AllPeers = lambda_test:start_tier(?FUNCTION_NAME, Boot, 4, 2),
     {[A1, A2 | _] = Nodes, _} = lists:unzip(AllPeers),
     Victim = lists:nth(4, Nodes),
     Auths = lists:sort([A1, A2]),
@@ -267,7 +248,7 @@ reconnect(Config) when is_list(Config) ->
     %% must be connected again
     ?assertEqual(ok, peer:call(Victim, lambda_test, wait_connection, [Auths])),
     %% just in case: verify CLI returns the same information
-    stop_tier(AllPeers).
+    lambda_test:stop_tier(AllPeers).
 
 stop_authority() ->
     [{doc, "Tests stopping authority"}].
